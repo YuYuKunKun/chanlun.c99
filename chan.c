@@ -6,7 +6,8 @@
  * chan.c — 缠论 C99 移植实现
  */
 
-#define _XOPEN_SOURCE 700
+#define _POSIX_C_SOURCE 200112L
+#define _FILE_OFFSET_BITS 64
 #include "chan.h"
 
 /* 全局回收站 — 在观察者_增加原始K线中设置，供所有分析函数使用 */
@@ -143,6 +144,7 @@ void 动态数组_初始化(动态数组* arr, size_t 初始容量) {
 
 void 动态数组_追加(动态数组* arr, void* 元素) {
     if (arr->长度 >= arr->容量) {
+        if (arr->容量 > SIZE_MAX / 2) { perror("动态数组_追加"); abort(); }
         size_t 新容量 = arr->容量 * 2;
         void** 新数据 = realloc(arr->数据, 新容量 * sizeof(void*));
         if (!新数据) { perror("动态数组_追加"); abort(); }
@@ -222,7 +224,15 @@ time_t 转化为时间戳_数字(time_t ts) {
 
 time_t 转化为时间戳(const char* ts_str) {
     struct tm tm_buf = {0};
-    if (strptime(ts_str, "%Y-%m-%d %H:%M:%S", &tm_buf)) {
+    int y = 0, m = 0, d = 0, h = 0, min = 0, s = 0;
+    if (sscanf(ts_str, "%d-%d-%d %d:%d:%d", &y, &m, &d, &h, &min, &s) == 6) {
+        tm_buf.tm_year = y - 1900;
+        tm_buf.tm_mon = m - 1;
+        tm_buf.tm_mday = d;
+        tm_buf.tm_hour = h;
+        tm_buf.tm_min = min;
+        tm_buf.tm_sec = s;
+        tm_buf.tm_isdst = -1;
         return mktime(&tm_buf);
     }
     return 0;
@@ -1528,7 +1538,7 @@ void 笔_分析(分型* 初始分型, 动态数组* 分型序列, 动态数组* 
         之前分型 = 动态数组_获取(分型序列, 分型序列->长度 - 1);
         if (之前分型->中->时间戳 > 当前分型->中->时间戳 &&
             之前分型->中->序号 - 当前分型->中->序号 > 1) {
-            fprintf(stderr, "笔_分析: 时序错误 层次%d\n", 层次);
+            // fprintf(stderr, "笔_分析: 时序错误 层次%d\n", 层次); // 暂时注释掉
             解引用(当前分型);
             continue;
         }
@@ -3312,18 +3322,18 @@ void 观察者_增加原始K线(观察者* self, K线* 普K) {
     FILE* f = fopen(文件路径, "rb");
     if (!f) { perror(文件路径); return obs; }
 
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    fseeko(f, 0, SEEK_END);
+    off_t fsize = ftello(f);
+    fseeko(f, 0, SEEK_SET);
+    if (fsize <= 0) { fclose(f); return obs; }
 
-    uint8_t* buffer = malloc(fsize);
+    uint8_t* buffer = malloc((size_t)fsize);
     if (!buffer) { fclose(f); return obs; }
-    fread(buffer, 1, fsize, f);
+    fread(buffer, 1, (size_t)fsize, f);
     fclose(f);
 
-    size_t record_size = 48; /* 6 * 8 bytes */
-    for (long i = 0; i < fsize; i += record_size) {
-        if (i + (long)record_size > fsize) break;
+    off_t record_size = 48; /* 6 * 8 bytes */
+    for (off_t i = 0; i + record_size <= fsize; i += record_size) {
         K线* k = K线_读取大端字节数组(buffer + i, 周期, "Bar");
         k->序号 = (int)(i / record_size);
         观察者_增加原始K线(obs, k);
