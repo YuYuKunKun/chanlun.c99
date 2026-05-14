@@ -1,6 +1,6 @@
 # chan2c99 — 缠论技术分析库（Python 参考实现 + C99 移植）
 
-基于 [缠论（Chan Theory）](https://zh.wikipedia.org/wiki/%E7%BC%A0%E4%B8%AD%E8%AF%B4%E8%82%A1) 的多层次 K 线技术分析库。提供 **Python** 与 **C99** 双语言实现，两版输出完全一致。
+基于缠论的多层次 K 线技术分析库。提供 **Python** 与 **C99** 双语言实现，两版输出完全一致。
 
 ## 快速开始
 
