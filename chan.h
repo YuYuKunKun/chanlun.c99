@@ -21,6 +21,9 @@
 #include <assert.h>
 #include <float.h>
 
+/* OOM handler — set by Python bindings to raise MemoryError instead of abort() */
+extern void (*chan_oom_handler)(size_t requested_bytes);
+
 /* ================================================================
  * 内存自动管理（引用计数）
  * ================================================================ */
@@ -58,6 +61,9 @@ void  对象销毁(void* 对象);
 
 /* 调试 */
 extern bool CHAN_DEBUG_MEM;
+void chan_memory_diagnostics(void);
+int  chan_cnt_alloc(int type);
+int  chan_cnt_free(int type);
 
 /* ================================================================
  * 动态数组（泛型列表）
