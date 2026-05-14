@@ -1,0 +1,33 @@
+# MANIFEST.in — source distribution manifest for chan-c99
+
+# Core C sources and headers
+include chan.c chan.h _core.c
+
+# Python package
+include chan_c99/__init__.py
+include chan_c99/_core.pyi
+include chan_c99/enums.py
+include chan_c99/_bindings.py
+
+# Ctypes fallback wrappers
+include chan_wrapper.c chan_wrapper.h
+
+# Reference Python implementation
+include chan.py
+
+# Documentation
+include README.md
+
+# Test data (binary .nb files used by tests)
+include btcusd-300-1761327300-1776327900.nb
+include btcusd-300-1777649100-1778398800.nb
+
+# Tests
+recursive-include tests *.py
+
+# Exclude build artifacts
+prune __pycache__
+prune chan_c99/__pycache__
+prune tests/__pycache__
+prune .pytest_cache
+global-exclude *.o *.so *.dylib *.dll
