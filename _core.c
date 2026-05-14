@@ -284,14 +284,20 @@ static int 解析分型结构(PyObject *v, 分型结构 *out) {
  *  tp_dict directly.
  * ================================================================ */
 
+/* 内部键名不能与 CPython 的 slot wrapper 描述符冲突（tp_dict["__repr__"] 默认就是
+ * 指向 tp_repr 的 slot wrapper，直接取出调用会造成无限递归）。用带前缀的私有键名。
+ */
+#define CUSTOM_REPR_KEY "_custom_repr_cb"
+#define CUSTOM_STR_KEY  "_custom_str_cb"
+
 static PyObject *_try_custom_repr(PyObject *self) {
-    PyObject *custom = PyDict_GetItemString(Py_TYPE(self)->tp_dict, "__repr__");
+    PyObject *custom = PyDict_GetItemString(Py_TYPE(self)->tp_dict, CUSTOM_REPR_KEY);
     if (custom) return PyObject_CallOneArg(custom, self);
     return NULL;
 }
 
 static PyObject *_try_custom_str(PyObject *self) {
-    PyObject *custom = PyDict_GetItemString(Py_TYPE(self)->tp_dict, "__str__");
+    PyObject *custom = PyDict_GetItemString(Py_TYPE(self)->tp_dict, CUSTOM_STR_KEY);
     if (custom) return PyObject_CallOneArg(custom, self);
     return NULL;
 }
@@ -315,11 +321,14 @@ static PyObject *Py__设置自定义strrepr(PyObject *m, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "name must be '__repr__' or '__str__'");
         return NULL;
     }
+    /* Translate API names to internal keys that won't clash with CPython's
+     * slot wrapper descriptors in tp_dict. */
+    const char *key = (strcmp(name, "__repr__") == 0) ? CUSTOM_REPR_KEY : CUSTOM_STR_KEY;
     if (func == Py_None) {
-        int r = PyDict_DelItemString(type->tp_dict, name);
+        int r = PyDict_DelItemString(type->tp_dict, key);
         if (r < 0) { PyErr_Clear(); }  /* 键不存在，忽略 */
     } else if (PyCallable_Check(func)) {
-        PyDict_SetItemString(type->tp_dict, name, func);
+        PyDict_SetItemString(type->tp_dict, key, func);
     } else {
         PyErr_SetString(PyExc_TypeError, "callback must be callable or None");
         return NULL;
@@ -454,10 +463,13 @@ static PyObject *Py_K线_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     K线 *k = (K线*)self->ptr;
-    char 缓冲[256];
+    char 缓冲[384];
     snprintf(缓冲, sizeof(缓冲),
-             "<K线 id=%s idx=%d O=%.2f H=%.2f L=%.2f C=%.2f>",
-             k->标识, k->序号, k->开盘价, k->高, k->低, k->收盘价);
+             "%s<%d, %d, %s, %lld, %.2f, %.2f, %.2f, %.2f>",
+             k->标识, k->序号, k->周期,
+             相对方向_到名称(K线_方向(k)),
+             (long long)k->时间戳,
+             k->开盘价, k->高, k->低, k->收盘价);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -587,10 +599,13 @@ static PyObject *Py_缠论K线_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     缠论K线 *ck = (缠论K线*)self->ptr;
-    char 缓冲[256];
+    char 缓冲[384];
     snprintf(缓冲, sizeof(缓冲),
-             "<缠论K线 id=%s idx=%d 方向值=%d H=%.2f L=%.2f>",
-             ck->标识, ck->序号, (int)ck->方向, ck->高, ck->低);
+             "%s<%d, %s, %d, %s, %lld, %.2f, %.2f>",
+             ck->标识, ck->序号,
+             分型结构_到名称(ck->分型), ck->周期,
+             相对方向_到名称(ck->方向),
+             (long long)ck->时间戳, ck->高, ck->低);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -640,7 +655,7 @@ static PyObject *Py_缺口_repr(ChanObject *self) {
     if (custom) return custom;
     缺口 *g = (缺口*)self->ptr;
     char 缓冲[128];
-    snprintf(缓冲, sizeof(缓冲), "<缺口 H=%.2f L=%.2f>", g->高, g->低);
+    snprintf(缓冲, sizeof(缓冲), "缺口区间<%.2f <=> %.2f>", g->低, g->高);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -709,9 +724,12 @@ static PyObject *Py_分型_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     分型 *f = (分型*)self->ptr;
-    char 缓冲[128];
-    snprintf(缓冲, sizeof(缓冲), "<分型 struct=%d ts=%lld>",
-             (int)f->结构, (long long)f->时间戳);
+    char 缓冲[256];
+    snprintf(缓冲, sizeof(缓冲),
+             "%s<%lld, %.6f, 左缺失=%d, 右缺失=%d>",
+             分型结构_到名称(f->中->分型),
+             (long long)f->时间戳, f->分型特征值,
+             f->左 == NULL, f->右 == NULL);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -953,10 +971,26 @@ static PyObject *Py_虚线_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     虚线 *d = (虚线*)self->ptr;
-    char 缓冲[256];
-    snprintf(缓冲, sizeof(缓冲),
-             "<虚线 id=%s idx=%d 方向值=%d H=%.2f L=%.2f 有效性=%d>",
-             d->标识, d->序号, (int)虚线_方向(d), d->高, d->低, (int)d->有效性);
+    char 缓冲[384];
+    if (strcmp(d->标识, "笔") == 0) {
+        snprintf(缓冲, sizeof(缓冲),
+                 "笔(%d, %s, %s, %s, 周期: %d, 数量: %d)",
+                 d->序号,
+                 相对方向_到名称(虚线_方向(d)),
+                 分型结构_到名称(d->文->结构),
+                 分型结构_到名称(d->武->结构),
+                 d->文->中->周期,
+                 d->武->中->序号 - d->文->中->序号 + 1);
+    } else {
+        snprintf(缓冲, sizeof(缓冲),
+                 "%s<%d, %s, %s, %s, %s, 数量: %zu>",
+                 d->标识, d->序号,
+                 线段_四象(d),
+                 相对方向_到名称(虚线_方向(d)),
+                 分型结构_到名称(d->文->结构),
+                 分型结构_到名称(d->武->结构),
+                 d->基础序列.长度);
+    }
     return PyUnicode_FromString(缓冲);
 }
 
@@ -1042,10 +1076,17 @@ static PyObject *Py_笔_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     虚线 *d = (虚线*)self->ptr;
-    char 缓冲[256];
+    char 缓冲[384];
     snprintf(缓冲, sizeof(缓冲),
-             "<笔 id=%s idx=%d 方向值=%d H=%.2f L=%.2f 有效性=%d>",
-             d->标识, d->序号, (int)虚线_方向(d), d->高, d->低, (int)d->有效性);
+             "笔(%d, %s, %s<%lld,%.2f>, %s<%lld,%.2f>, 周期: %d, 数量: %d)",
+             d->序号,
+             相对方向_到名称(虚线_方向(d)),
+             分型结构_到名称(d->文->结构),
+             (long long)d->文->时间戳, d->文->分型特征值,
+             分型结构_到名称(d->武->结构),
+             (long long)d->武->时间戳, d->武->分型特征值,
+             d->文->中->周期,
+             d->武->中->序号 - d->文->中->序号 + 1);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -1131,11 +1172,14 @@ static PyObject *Py_线段特征_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     线段特征 *sf = (线段特征*)self->ptr;
-    char 缓冲[256];
+    char 缓冲[384];
     snprintf(缓冲, sizeof(缓冲),
-             "<线段特征 id=%s idx=%d 方向值=%d H=%.2f L=%.2f>",
-             sf->标识, sf->序号, (int)线段特征_方向(sf),
-             线段特征_高(sf), 线段特征_低(sf));
+             "%s<%s, %s, %s, %zu>",
+             sf->标识,
+             相对方向_到名称(线段特征_方向(sf)),
+             线段特征_文(sf) ? 分型结构_到名称(线段特征_文(sf)->结构) : "?",
+             线段特征_武(sf) ? 分型结构_到名称(线段特征_武(sf)->结构) : "?",
+             sf->元素.长度);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -1216,10 +1260,17 @@ static PyObject *Py_线段_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     虚线 *d = (虚线*)self->ptr;
-    char 缓冲[256];
+    char 缓冲[384];
     snprintf(缓冲, sizeof(缓冲),
-             "<线段 id=%s idx=%d 方向值=%d H=%.2f L=%.2f 有效性=%d>",
-             d->标识, d->序号, (int)虚线_方向(d), d->高, d->低, (int)d->有效性);
+             "%s<%d, %s, %s, %s<%lld,%.2f>, %s<%lld,%.2f>, 数量: %zu>",
+             d->标识, d->序号,
+             线段_四象(d),
+             相对方向_到名称(虚线_方向(d)),
+             分型结构_到名称(d->文->结构),
+             (long long)d->文->时间戳, d->文->分型特征值,
+             分型结构_到名称(d->武->结构),
+             (long long)d->武->时间戳, d->武->分型特征值,
+             d->基础序列.长度);
     return PyUnicode_FromString(缓冲);
 }
 
@@ -1344,11 +1395,22 @@ static PyObject *Py_中枢_repr(ChanObject *self) {
     PyObject *custom = _try_custom_repr((PyObject*)self);
     if (custom) return custom;
     中枢 *h = (中枢*)self->ptr;
-    char 缓冲[256];
-    snprintf(缓冲, sizeof(缓冲),
-             "<中枢 id=%s idx=%d level=%d H=%.2f L=%.2f complete=%d>",
-             h->标识, h->序号, h->级别,
-             中枢_高(h), 中枢_低(h), (int)中枢_完整性(h));
+    char 缓冲[384];
+    if (h->元素.长度 > 0) {
+        虚线 *首 = (虚线*)动态数组_获取(&h->元素, 0);
+        虚线 *末 = (虚线*)动态数组_获取(&h->元素, h->元素.长度 - 1);
+        snprintf(缓冲, sizeof(缓冲),
+                 "%s(%.2f, %.2f, 元素数量: %zu, %lld ===>>> %lld)",
+                 h->标识,
+                 中枢_高(h), 中枢_低(h),
+                 h->元素.长度,
+                 (long long)首->文->时间戳,
+                 (long long)末->武->时间戳);
+    } else {
+        snprintf(缓冲, sizeof(缓冲),
+                 "%s(%.2f, %.2f, 元素数量: 0)",
+                 h->标识, 中枢_高(h), 中枢_低(h));
+    }
     return PyUnicode_FromString(缓冲);
 }
 
