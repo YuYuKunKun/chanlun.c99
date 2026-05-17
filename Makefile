@@ -7,7 +7,7 @@
 
 CC       = gcc
 CFLAGS   = -std=c99 -Wall -Wextra -O2 -fPIC -finput-charset=UTF-8
-LDFLAGS  = -shared -lm
+LDFLAGS  = -shared -lm -lpthread
 
 # --- Python binding ---
 # Adjust PYTHON_INCLUDE to match your Python version:
@@ -37,13 +37,19 @@ chan_wrapper_py.o: chan_wrapper.c chan_wrapper.h chan.h
 
 # --- Standalone C test ---
 chan_test: CFLAGS += -O2
-chan_test: LDFLAGS := -lm
+chan_test: LDFLAGS := -lm -lpthread
 chan_test: chan.c chan.h
 	$(CC) $(CFLAGS) -o $@ chan.c $(LDFLAGS)
 
 test: chan_test
 	./chan_test
 
+# --- Multi-threaded test ---
+mt-test: CFLAGS += -DCHAN_MULTITHREAD_TEST
+mt-test: chan.c chan.h
+	$(CC) $(CFLAGS) -O0 -g -o chan_test_mt chan.c -lm -lpthread
+	./chan_test_mt --mt-test
+
 # --- Cleanup ---
 clean:
-	rm -f chan_test libchan.so _core.so *.o
+	rm -f chan_test chan_test_mt libchan.so _core.so *.o

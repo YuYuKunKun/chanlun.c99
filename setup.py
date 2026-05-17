@@ -39,7 +39,7 @@ def _检测编译器_charset_flag():
 
     link_args = []
     if sys.platform not in ('win32', 'darwin'):
-        link_args.append('-lm')
+        link_args.extend(['-lm', '-lpthread'])
 
     # 获取编译器（优先用 CC 环境变量，其次用 sysconfig）
     cc = os.environ.get('CC', sysconfig.get_config_var('CC') or 'cc')

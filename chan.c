@@ -16,6 +16,173 @@
    对象销毁（清理内部资源），但 skip free（池拥有内存）。 */
 
 /* ================================================================
+ *  全局内存池
+ * ================================================================ */
+
+void *全局内存池 = NULL;
+
+/* ================================================================
+ *  内部：获取块的数据区域起始地址
+ * ================================================================ */
+
+static inline void *块_数据区(内存池块 *block) {
+    return (char *) block + 内存池_头部大小;
+}
+
+/* ================================================================
+ *  内部：向上对齐
+ * ================================================================ */
+
+static inline size_t 向上对齐(size_t n, size_t align) {
+    return (n + align - 1) & ~(align - 1);
+}
+
+/* ================================================================
+ *  内部：分配新块并链接到池中
+ * ================================================================ */
+
+static 内存池块 *分配新块(内存池 *self, size_t 数据容量) {
+    size_t 分配总大小 = 内存池_头部大小 + 数据容量;
+    内存池块 *block = malloc(分配总大小);
+    if (!block) return NULL;
+
+    block->下一块 = NULL;
+    block->容量 = 数据容量;
+    block->已用 = 0;
+
+    /* 链入尾部 */
+    if (!self->首块) {
+        self->首块 = block;
+        self->当前块 = block;
+    } else {
+        内存池块 *tail = self->首块;
+        while (tail->下一块) tail = tail->下一块;
+        tail->下一块 = block;
+    }
+
+    self->总容量 += 数据容量;
+    return block;
+}
+
+/* ================================================================
+ *  API 实现
+ * ================================================================ */
+
+void 内存池_初始化(内存池 *self, size_t 初始块大小) {
+    if (初始块大小 == 0) 初始块大小 = 1024 * 1024; /* 默认 1 MB */
+
+        self->首块 = NULL;
+    self->当前块 = NULL;
+    self->块大小 = 初始块大小;
+    self->总容量 = 0;
+    self->总分配 = 0;
+    self->分配次数 = 0;
+    self->清理头 = NULL;
+    pthread_mutex_init(&self->锁, NULL);
+
+    分配新块(self, 初始块大小);
+}
+
+void *内存池_分配(内存池 *self, size_t 大小) {
+    if (大小 == 0) return NULL;
+
+    pthread_mutex_lock(&self->锁);
+
+    size_t 对齐后大小 = 向上对齐(大小, 内存池_对齐);
+    内存池块 *block = self->当前块;
+
+    /* 当前块空间不足时分配新块 */
+    if (!block || block->已用 + 对齐后大小 > block->容量) {
+        size_t 新块大小 = self->块大小;
+
+        /* 单次请求大于默认块大小 → 分配 oversized 专用块 */
+        if (对齐后大小 > 新块大小) {
+            新块大小 = 对齐后大小;
+        } else {
+            /* 扩容：下一个默认块 2x */
+            self->块大小 = (self->块大小 < (SIZE_MAX / 2))
+            ? self->块大小 * 2
+            : self->块大小;
+        }
+
+        block = 分配新块(self, 新块大小);
+        if (!block) {
+            pthread_mutex_unlock(&self->锁);
+            return NULL;
+        }
+
+        self->当前块 = block;
+    }
+
+    void *ptr = (char *) 块_数据区(block) + block->已用;
+    memset(ptr, 0, 对齐后大小); /* calloc 语义：零初始化 */
+
+    block->已用 += 对齐后大小;
+    self->总分配 += 对齐后大小;
+    self->分配次数++;
+
+    pthread_mutex_unlock(&self->锁);
+    return ptr;
+}
+
+void *内存池_分配拷贝(内存池 *self, const void *源, size_t 大小) {
+    void *dst = 内存池_分配(self, 大小);
+    if (dst) memcpy(dst, 源, 大小);
+    return dst;
+}
+
+void 内存池_重置(内存池 *self) {
+    内存池块 *block = self->首块;
+    while (block) {
+        block->已用 = 0;
+        block = block->下一块;
+    }
+    self->当前块 = self->首块;
+    self->总分配 = 0;
+    self->分配次数 = 0;
+    self->清理头 = NULL;
+    /* 块大小不重置——保留扩容后的配置以适配数据规模 */
+}
+
+void 内存池_释放(内存池 *self) {
+    内存池块 *block = self->首块;
+    while (block) {
+        内存池块 *next = block->下一块;
+        free(block);
+        block = next;
+    }
+    self->首块 = NULL;
+    self->当前块 = NULL;
+    self->总容量 = 0;
+    self->总分配 = 0;
+    self->分配次数 = 0;
+    self->清理头 = NULL;
+    pthread_mutex_destroy(&self->锁);
+}
+
+size_t 内存池_使用量(const 内存池 *self) {
+    return self->总分配;
+}
+
+size_t 内存池_总容量(const 内存池 *self) {
+    return self->总容量;
+}
+
+size_t 内存池_分配次数(const 内存池 *self) {
+    return self->分配次数;
+}
+
+size_t 内存池_块数量(const 内存池 *self) {
+    size_t n = 0;
+    内存池块 *block = self->首块;
+    while (block) {
+        n++;
+        block = block->下一块;
+    }
+    return n;
+}
+
+/* ================================================================
  * 内存管理
  * ================================================================ */
 
@@ -35,11 +202,13 @@ void 打印内存摘要(void) {
     fprintf(stderr, "%-20s %8s %8s %8s\n", "类型", "分配", "释放", "泄漏");
     size_t total_leak = 0;
     for (int i = 0; i < CHAN_TYPE_COUNT; i++) {
-        if (分配计数[i] > 0 || 释放计数[i] > 0) {
-            size_t leak = 分配计数[i] - 释放计数[i];
+        size_t alloc = __atomic_load_n(&分配计数[i], __ATOMIC_RELAXED);
+        size_t freed = __atomic_load_n(&释放计数[i], __ATOMIC_RELAXED);
+        if (alloc > 0 || freed > 0) {
+            size_t leak = alloc - freed;
             total_leak += leak;
             fprintf(stderr, "%-20s %8zu %8zu %8zu%s\n",
-                    类型名称[i], 分配计数[i], 释放计数[i], leak,
+                    类型名称[i], alloc, freed, leak,
                     leak > 0 ? " <---" : "");
         }
     }
@@ -48,25 +217,34 @@ void 打印内存摘要(void) {
 }
 
 void chan_memory_diagnostics(void) { 打印内存摘要(); }
-int chan_cnt_alloc(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) 分配计数[type] : -1; }
-int chan_cnt_free(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) 释放计数[type] : -1; }
+int chan_cnt_alloc(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&分配计数[type], __ATOMIC_RELAXED) : -1; }
+int chan_cnt_free(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&释放计数[type], __ATOMIC_RELAXED) : -1; }
 
+
+static pthread_mutex_t 全局池初始化锁 = PTHREAD_MUTEX_INITIALIZER;
+static bool 全局池已初始化 = false;
 
 static 内存池 *获取全局池(void) {
     static 内存池 全局池;
-    static bool 已初始化 = false;
-    if (!已初始化) {
-        内存池_初始化(&全局池, 0); /* 默认 1MB 块 */
-        已初始化 = true;
+    if (!__atomic_load_n(&全局池已初始化, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_lock(&全局池初始化锁);
+        if (!全局池已初始化) {
+            内存池_初始化(&全局池, 0); /* 默认 1MB 块 */
+            __atomic_store_n(&全局池已初始化, true, __ATOMIC_RELEASE);
+        }
+        pthread_mutex_unlock(&全局池初始化锁);
     }
     return &全局池;
 }
 
 void 释放全局内存池(void) {
-    内存池 *pool = 获取全局池();
-    if (!pool) return;
+    内存池 *pool = (内存池 *) __atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE);
+    if (!pool) {
+        pool = 获取全局池();
+        if (!pool) return;
+    }
 
-    void *cursor = pool->清理头;
+    void *cursor = __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
     while (cursor) {
         if (!已销毁(cursor)) {
             对象销毁(cursor);
@@ -74,12 +252,14 @@ void 释放全局内存池(void) {
         cursor = ((对象头结构 *) cursor)->下一清理对象;
     }
     内存池_释放(pool);
-    全局内存池 = NULL;
+    __atomic_store_n(&全局内存池, NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&全局池已初始化, false, __ATOMIC_RELEASE);
 }
 
 void *分配(size_t 大小, 对象类型 类型) {
-    if (!全局内存池) 全局内存池 = 获取全局池();
-    内存池 *pool = (内存池 *) 全局内存池;
+    if (!__atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&全局内存池, 获取全局池(), __ATOMIC_RELEASE);
+    内存池 *pool = (内存池 *) __atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE);
     void *ptr;
     if (pool) {
         ptr = 内存池_分配(pool, 大小);
@@ -95,10 +275,15 @@ void *分配(size_t 大小, 对象类型 类型) {
     ((对象头结构 *) ptr)->所属内存池 = pool;
     ((对象头结构 *) ptr)->弱引用计数 = 0;
     if (pool) {
-        ((对象头结构 *) ptr)->下一清理对象 = pool->清理头;
-        pool->清理头 = ptr;
+        /* 无锁压入清理链表（LIFO 栈，CAS 循环） */
+        对象头结构 *old_head;
+        do {
+            old_head = (对象头结构 *) __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
+            ((对象头结构 *) ptr)->下一清理对象 = old_head;
+        } while (!__atomic_compare_exchange_n(&pool->清理头, &((对象头结构 *) ptr)->下一清理对象, ptr,
+                                               false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
     }
-    分配计数[类型]++;
+    __atomic_fetch_add(&分配计数[类型], 1, __ATOMIC_RELAXED);
     return ptr;
 }
 
@@ -111,12 +296,12 @@ void (*chan_oom_handler)(size_t) = default_oom_handler;
 
 void 引用(void *对象) {
     if (!对象) return;
-    引用计数(对象)++;
+    __atomic_fetch_add(&引用计数(对象), 1, __ATOMIC_RELAXED);
 }
 
 void 解引用(void *对象) {
     if (!对象) return;
-    if (--引用计数(对象) <= 0) {
+    if (__atomic_fetch_sub(&引用计数(对象), 1, __ATOMIC_ACQ_REL) <= 1) {
         if (CHAN_DEBUG_MEM) {
             fprintf(stderr, "解引用: 释放对象 %p\n", 对象);
         }
@@ -129,10 +314,11 @@ void 解引用(void *对象) {
 }
 
 void 对象销毁(void *对象) {
-    if (已销毁(对象)) return;
-    已销毁(对象) = true;
+    /* 原子 test-and-set：确保单线程销毁，exchange 返回旧值，true 表示已销毁 */
+    if (__atomic_exchange_n(&((对象头结构 *) 对象)->已销毁, true, __ATOMIC_ACQ_REL))
+        return;
     对象类型 t = 对象类型_取(对象);
-    释放计数[t]++; /* 每对象只销毁一次，在此统一计数 */
+    __atomic_fetch_add(&释放计数[t], 1, __ATOMIC_RELAXED);
     switch (t) {
         case CHAN_TYPE_K线: 释放K线((K线 *) 对象);
             break;
@@ -239,43 +425,45 @@ void 动态数组_释放(动态数组 *arr, bool 释放元素) {
 
 /* 独立指针字段弱引用设置：
  *   旧目标弱引用计数--，新目标弱引用计数++
- *   用法：弱引用_设置(fractal, 左, new_target) */
+ *   用法：弱引用_设置(fractal, 左, new_target)
+ *   弱引用计数操作均使用 __ATOMIC_RELAXED：仅用于验证，无数序依赖 */
 #define 弱引用_设置(ptr, field, target) do { \
     void* _弱设_t = (void*)(target); \
-    if ((ptr)->field && !已销毁((ptr)->field)) \
-        ((对象头结构*)((ptr)->field))->弱引用计数--; \
+    if ((ptr)->field && !__atomic_load_n(&((对象头结构*)((ptr)->field))->已销毁, __ATOMIC_ACQUIRE)) \
+        __atomic_fetch_sub(&((对象头结构*)((ptr)->field))->弱引用计数, 1, __ATOMIC_RELAXED); \
     (ptr)->field = _弱设_t; \
     if (_弱设_t) \
-        ((对象头结构*)(_弱设_t))->弱引用计数++; \
+        __atomic_fetch_add(&((对象头结构*)(_弱设_t))->弱引用计数, 1, __ATOMIC_RELAXED); \
 } while(0)
 
 /* 手动弱引用操作（用于手动平衡场景） */
-#define 弱引用_手动增加(ptr) do { ((对象头结构*)(ptr))->弱引用计数++; } while(0)
-#define 弱引用_手动减少(ptr) do { ((对象头结构*)(ptr))->弱引用计数--; } while(0)
+#define 弱引用_手动增加(ptr) do { __atomic_fetch_add(&((对象头结构*)(ptr))->弱引用计数, 1, __ATOMIC_RELAXED); } while(0)
+#define 弱引用_手动减少(ptr) do { __atomic_fetch_sub(&((对象头结构*)(ptr))->弱引用计数, 1, __ATOMIC_RELAXED); } while(0)
 
-/* 动态数组弱引用操作 */
+/* 动态数组弱引用操作 — 所有 ++/-- 使用原子操作 */
 void 弱引用_数组追加(动态数组 *arr, void *元素) {
     动态数组_追加(arr, 元素);
-    if (元素) ((对象头结构 *) 元素)->弱引用计数++;
+    if (元素) __atomic_fetch_add(&((对象头结构 *) 元素)->弱引用计数, 1, __ATOMIC_RELAXED);
 }
 
 void 弱引用_数组设置(动态数组 *arr, size_t i, void *新元素) {
     void *旧 = 动态数组_获取(arr, i);
-    if (旧) ((对象头结构 *) 旧)->弱引用计数--;
+    if (旧) __atomic_fetch_sub(&((对象头结构 *) 旧)->弱引用计数, 1, __ATOMIC_RELAXED);
     动态数组_设置(arr, i, 新元素);
-    if (新元素) ((对象头结构 *) 新元素)->弱引用计数++;
+    if (新元素) __atomic_fetch_add(&((对象头结构 *) 新元素)->弱引用计数, 1, __ATOMIC_RELAXED);
 }
 
 void *弱引用_数组弹出(动态数组 *arr) {
     void *尾 = 动态数组_弹出(arr);
-    if (尾) ((对象头结构 *) 尾)->弱引用计数--;
+    if (尾) __atomic_fetch_sub(&((对象头结构 *) 尾)->弱引用计数, 1, __ATOMIC_RELAXED);
     return 尾;
 }
 
 void 弱引用_数组清除(动态数组 *arr) {
     for (size_t i = 0; i < arr->长度; i++) {
         void *e = arr->数据[i];
-        if (e && !已销毁(e)) ((对象头结构 *) e)->弱引用计数--;
+        if (e && !__atomic_load_n(&((对象头结构 *) e)->已销毁, __ATOMIC_ACQUIRE))
+            __atomic_fetch_sub(&((对象头结构 *) e)->弱引用计数, 1, __ATOMIC_RELAXED);
     }
     free(arr->数据);
     arr->数据 = NULL;
@@ -3991,11 +4179,166 @@ void 读取数据文件(const char *文件路径) {
 }
 
 /* ================================================================
+ * 多线程并发测试（编译时定义 CHAN_MULTITHREAD_TEST 启用）
+ * ================================================================ */
+
+#ifdef CHAN_MULTITHREAD_TEST
+
+#include <pthread.h>
+
+#define MT_THREADS 4
+#define MT_EXPECTED_S 2796
+#define MT_EXPECTED_G 374
+#define MT_EXPECTED_Z 48
+
+typedef struct {
+    int id;
+    const char *file;
+    size_t strokes, segments, hubs;
+    int errors;
+} MTResult;
+
+/* 测试 1: 并行完整分析 —— 每个线程独立跑全量数据 */
+static void *mt_并行分析(void *arg) {
+    MTResult *r = (MTResult *)arg;
+    缠论配置 *cfg = 缠论配置_不推送();
+    观察者 *obs = 观察者_读取数据文件(r->file, cfg);
+    r->strokes = obs->笔序列.长度;
+    r->segments = obs->线段序列.长度;
+    r->hubs = obs->中枢序列.长度;
+    if (r->strokes != MT_EXPECTED_S) r->errors++;
+    if (r->segments != MT_EXPECTED_G) r->errors++;
+    if (r->hubs != MT_EXPECTED_Z) r->errors++;
+    解引用(obs);
+    return NULL;
+}
+
+/* 测试 2: 并发池分配压力 —— 每线程分配 10000 根 K 线 */
+static void *mt_创建K线(void *arg) {
+    MTResult *r = (MTResult *)arg;
+    for (int i = 0; i < 10000; i++) {
+        char id[32];
+        snprintf(id, sizeof(id), "MT%d-K%d", r->id, i);
+        K线 *k = K线_新建(id, i, 300, 1761327300 + i * 60,
+                          50000.0 + (double)(i % 100),
+                          50100.0 + (double)(i % 100),
+                          49900.0 + (double)(i % 100),
+                          50050.0 + (double)(i % 100),
+                          100.0);
+        if (!k) { r->errors++; return NULL; }
+    }
+    return NULL;
+}
+
+void 运行多线程测试(const char *文件路径) {
+    fprintf(stderr, "\n========== 多线程并发测试 ==========\n");
+    fprintf(stderr, "线程数: %d  数据: %s\n\n", MT_THREADS, 文件路径);
+
+    int failed = 0;
+
+    /* ---- 测试 1: 并行完整分析 ---- */
+    fprintf(stderr, "--- 测试 1: 并行完整分析 ---\n");
+    {
+        pthread_t threads[MT_THREADS];
+        MTResult results[MT_THREADS];
+
+        for (int i = 0; i < MT_THREADS; i++) {
+            results[i].id = i;
+            results[i].file = 文件路径;
+            results[i].errors = 0;
+            pthread_create(&threads[i], NULL, mt_并行分析, &results[i]);
+        }
+        for (int i = 0; i < MT_THREADS; i++)
+            pthread_join(threads[i], NULL);
+
+        for (int i = 0; i < MT_THREADS; i++) {
+            fprintf(stderr, "  线程 %d: 笔=%-4zu 线段=%-3zu 中枢=%-2zu %s\n",
+                    i, results[i].strokes, results[i].segments, results[i].hubs,
+                    results[i].errors ? "✗" : "✓");
+            if (results[i].errors) failed++;
+        }
+
+        int consistent = 1;
+        for (int i = 1; i < MT_THREADS; i++) {
+            if (results[i].strokes != results[0].strokes ||
+                results[i].segments != results[0].segments ||
+                results[i].hubs != results[0].hubs) {
+                consistent = 0;
+                break;
+            }
+        }
+        fprintf(stderr, "  一致性: %s\n\n", consistent ? "✓ 全部一致" : "✗ 不一致");
+        if (!consistent) failed++;
+    }
+
+    释放全局内存池();
+
+    /* ---- 测试 2: 并发池分配压力 ---- */
+    fprintf(stderr, "--- 测试 2: 并发池分配压力 (每线程 10000 K线) ---\n");
+    {
+        pthread_t threads[MT_THREADS];
+        MTResult results[MT_THREADS];
+
+        for (int i = 0; i < MT_THREADS; i++) {
+            results[i].id = i;
+            results[i].errors = 0;
+            pthread_create(&threads[i], NULL, mt_创建K线, &results[i]);
+        }
+        for (int i = 0; i < MT_THREADS; i++)
+            pthread_join(threads[i], NULL);
+
+        for (int i = 0; i < MT_THREADS; i++) {
+            fprintf(stderr, "  线程 %d: %s\n", i,
+                    results[i].errors ? "✗ 分配失败" : "✓");
+            if (results[i].errors) failed++;
+        }
+        fprintf(stderr, "\n");
+    }
+
+    释放全局内存池();
+
+    /* ---- 测试 3: 并发压力后单线程验证 ---- */
+    fprintf(stderr, "--- 测试 3: 并发压力后单线程验证 ---\n");
+    {
+        缠论配置 *cfg = 缠论配置_不推送();
+        观察者 *obs = 观察者_读取数据文件(文件路径, cfg);
+
+        int ok = (obs->笔序列.长度 == MT_EXPECTED_S &&
+                  obs->线段序列.长度 == MT_EXPECTED_G &&
+                  obs->中枢序列.长度 == MT_EXPECTED_Z);
+
+        fprintf(stderr, "  结果: 笔=%zu 线段=%zu 中枢=%zu %s\n",
+                obs->笔序列.长度, obs->线段序列.长度, obs->中枢序列.长度,
+                ok ? "✓" : "✗");
+        if (!ok) failed++;
+
+        验证弱引用计数(obs);
+        解引用(obs);
+    }
+
+    释放全局内存池();
+    打印内存摘要();
+
+    fprintf(stderr, "\n========== %d/3 测试通过 ==========\n", 3 - failed);
+}
+
+#endif /* CHAN_MULTITHREAD_TEST */
+
+/* ================================================================
  * main
  * ================================================================ */
 
 int main(int argc, char **argv) {
-    const char *文件路径 = "./btcusd-300-1761327300-1776327900.nb";
+    const char *默认路径 = "./btcusd-300-1761327300-1776327900.nb";
+    const char *文件路径 = 默认路径;
+
+#ifdef CHAN_MULTITHREAD_TEST
+    if (argc > 1 && strcmp(argv[1], "--mt-test") == 0) {
+        运行多线程测试(argc > 2 ? argv[2] : 默认路径);
+        return 0;
+    }
+#endif
+
     if (argc > 1) 文件路径 = argv[1];
 
     printf("加载文件: %s\n", 文件路径);
@@ -4060,13 +4403,11 @@ int main(int argc, char **argv) {
     }
     fclose(f枢);
 
-    读取数据文件(文件路径);
+
+
     验证弱引用计数(obs);
     解引用(obs);
     释放全局内存池();
     打印内存摘要();
     return 0;
 }
-
-/* 单编译单元：直接包含 arena 实现 */
-#include "arena.c"
