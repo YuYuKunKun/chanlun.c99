@@ -3562,8 +3562,8 @@ static PyObject *Py_分型结构_分析(PyObject *m, PyObject *args, PyObject *k
 
 /* ---- 释放全局内存池 (manual pool cleanup) ---- */
 static PyObject *Py_释放全局内存池(PyObject *Py_UNUSED(m), PyObject *Py_UNUSED(args)) {
-    释放全局内存池();
-    Py_RETURN_NONE;
+    if (释放全局内存池()) Py_RETURN_TRUE;
+    Py_RETURN_FALSE;
 }
 
 static PyMethodDef _core_functions[] = {

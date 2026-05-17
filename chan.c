@@ -237,14 +237,24 @@ static 内存池 *获取全局池(void) {
     return &全局池;
 }
 
-void 释放全局内存池(void) {
+bool 释放全局内存池(void) {
     内存池 *pool = (内存池 *) __atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE);
     if (!pool) {
         pool = 获取全局池();
-        if (!pool) return;
+        if (!pool) return false;
     }
 
+    /* 第一遍：检查所有未销毁对象是否还有弱引用 */
     void *cursor = __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
+    while (cursor) {
+        if (!已销毁(cursor) && __atomic_load_n(&((对象头结构 *) cursor)->弱引用计数, __ATOMIC_ACQUIRE) > 0) {
+            return false;
+        }
+        cursor = ((对象头结构 *) cursor)->下一清理对象;
+    }
+
+    /* 第二遍：销毁所有对象 */
+    cursor = __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
     while (cursor) {
         if (!已销毁(cursor)) {
             对象销毁(cursor);
@@ -254,6 +264,7 @@ void 释放全局内存池(void) {
     内存池_释放(pool);
     __atomic_store_n(&全局内存池, NULL, __ATOMIC_RELEASE);
     __atomic_store_n(&全局池已初始化, false, __ATOMIC_RELEASE);
+    return true;
 }
 
 void *分配(size_t 大小, 对象类型 类型) {
