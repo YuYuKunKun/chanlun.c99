@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 os.environ.setdefault('CHAN_C99_LIB',
                        os.path.join(os.path.dirname(__file__), '..', 'libchan.so'))
 
-from chan_c99 import (观察者, 缠论配置, K线, 笔, 线段, 中枢, 动态数组,
+from chan_c99 import (观察者, 缠论配置, K线, 笔, 线段, 虚线, 中枢, 动态数组,
                        缠论K线, 分型, 背驰分析, _设置自定义strrepr)
 from chan_c99.enums import 相对方向
 
@@ -135,7 +135,7 @@ class TestConsistency(unittest.TestCase):
         """Spot-check the first stroke's key fields."""
         s0 = self.obs.笔序列[0]
         self.assertEqual(s0.序号, 0)
-        self.assertEqual(s0.方向, '向上')
+        self.assertEqual(s0.方向, 相对方向.向上)
         self.assertAlmostEqual(s0.高, 110956.0, places=4)
         self.assertAlmostEqual(s0.低, 110175.0, places=4)
         self.assertEqual(s0.文.时间戳, 1761328800)
@@ -148,7 +148,7 @@ class TestConsistency(unittest.TestCase):
         self.assertTrue(h0.完整性)
         self.assertAlmostEqual(h0.高, 113992.0, places=4)
         self.assertAlmostEqual(h0.低, 112933.0, places=4)
-        self.assertEqual(len(h0.元素), 8)
+        self.assertEqual(len(h0.基础序列), 8)
 
     def test_incremental_equals_batch(self):
         """Verify incremental feed produces same results as batch load."""
@@ -436,7 +436,7 @@ class Test自定义strrepr(unittest.TestCase):
 
     def setUp(self):
         """每个测试前清除所有类型的自定义回调。"""
-        for t in (K线, 缠论K线, 分型, 线段, 笔, 中枢, 动态数组, 缠论配置):
+        for t in (K线, 缠论K线, 分型, 虚线, 中枢, 动态数组, 缠论配置):
             _设置自定义strrepr(t, '__repr__', None)
             _设置自定义strrepr(t, '__str__', None)
 
@@ -444,19 +444,19 @@ class Test自定义strrepr(unittest.TestCase):
 
     def test_custom_repr_single(self):
         """设置自定义 __repr__ 后 repr() 应返回回调结果。"""
-        _设置自定义strrepr(笔, '__repr__', lambda s: f'笔#{s.序号}')
+        _设置自定义strrepr(虚线, '__repr__', lambda s: f'笔#{s.序号}')
         s = self.obs.笔序列[0]
         self.assertEqual(repr(s), '笔#0')
 
     def test_custom_str_single(self):
         """设置自定义 __str__ 后 str() 应返回回调结果。"""
-        _设置自定义strrepr(笔, '__str__', lambda s: f'[笔 {s.序号}]')
+        _设置自定义strrepr(虚线, '__str__', lambda s: f'[笔 {s.序号}]')
         s = self.obs.笔序列[0]
         self.assertEqual(str(s), '[笔 0]')
 
     def test_custom_str_falls_back_to_repr(self):
         """未设置 __str__ 时 str() 应回退到 tp_repr（含自定义 __repr__）。"""
-        _设置自定义strrepr(笔, '__repr__', lambda s: f'笔#{s.序号}')
+        _设置自定义strrepr(虚线, '__repr__', lambda s: f'笔#{s.序号}')
         s = self.obs.笔序列[0]
         self.assertEqual(str(s), '笔#0')
 
@@ -464,18 +464,18 @@ class Test自定义strrepr(unittest.TestCase):
 
     def test_remove_custom_repr(self):
         """传入 None 应移除自定义 __repr__，恢复默认输出。"""
-        _设置自定义strrepr(笔, '__repr__', lambda s: 'CUSTOM')
+        _设置自定义strrepr(虚线, '__repr__', lambda s: 'CUSTOM')
         self.assertEqual(repr(self.obs.笔序列[0]), 'CUSTOM')
-        _设置自定义strrepr(笔, '__repr__', None)
+        _设置自定义strrepr(虚线, '__repr__', None)
         # 默认 repr 应包含类型名
         self.assertIn('笔', repr(self.obs.笔序列[0]))
         self.assertNotIn('CUSTOM', repr(self.obs.笔序列[0]))
 
     def test_remove_custom_str(self):
         """传入 None 应移除自定义 __str__，str() 回退到 repr。"""
-        _设置自定义strrepr(笔, '__str__', lambda s: 'CUSTOM_STR')
+        _设置自定义strrepr(虚线, '__str__', lambda s: 'CUSTOM_STR')
         self.assertEqual(str(self.obs.笔序列[0]), 'CUSTOM_STR')
-        _设置自定义strrepr(笔, '__str__', None)
+        _设置自定义strrepr(虚线, '__str__', None)
         self.assertNotEqual(str(self.obs.笔序列[0]), 'CUSTOM_STR')
 
     # ---- 错误处理 ----
@@ -483,12 +483,12 @@ class Test自定义strrepr(unittest.TestCase):
     def test_invalid_name_raises(self):
         """非法名称应抛出 ValueError。"""
         with self.assertRaises(ValueError):
-            _设置自定义strrepr(笔, '__add__', lambda s: 'x')
+            _设置自定义strrepr(虚线, '__add__', lambda s: 'x')
 
     def test_non_callable_raises(self):
         """非可调用对象应抛出 TypeError。"""
         with self.assertRaises(TypeError):
-            _设置自定义strrepr(笔, '__repr__', 'not_callable')
+            _设置自定义strrepr(虚线, '__repr__', 'not_callable')
 
     # ---- 所有类型 ----
 
@@ -497,8 +497,7 @@ class Test自定义strrepr(unittest.TestCase):
         _设置自定义strrepr(K线, '__repr__', lambda x: 'K')
         _设置自定义strrepr(缠论K线, '__repr__', lambda x: 'CK')
         _设置自定义strrepr(分型, '__repr__', lambda x: 'F')
-        _设置自定义strrepr(线段, '__repr__', lambda x: 'SEG')
-        _设置自定义strrepr(笔, '__repr__', lambda x: 'S')
+        _设置自定义strrepr(虚线, '__repr__', lambda x: 'DL')  # 笔/线段序列元素现为虚线
         _设置自定义strrepr(中枢, '__repr__', lambda x: 'H')
         _设置自定义strrepr(动态数组, '__repr__', lambda x: 'DA')
         _设置自定义strrepr(缠论配置, '__repr__', lambda x: 'CFG')
@@ -509,8 +508,8 @@ class Test自定义strrepr(unittest.TestCase):
 
         self.assertEqual(repr(self.obs.缠论K线序列[0]), 'CK')
         self.assertEqual(repr(self.obs.分型序列[0]), 'F')
-        self.assertEqual(repr(self.obs.线段序列[0]), 'SEG')
-        self.assertEqual(repr(self.obs.笔序列[0]), 'S')
+        self.assertEqual(repr(self.obs.线段序列[0]), 'DL')
+        self.assertEqual(repr(self.obs.笔序列[0]), 'DL')
         self.assertEqual(repr(self.obs.中枢序列[0]), 'H')
 
         da = 动态数组()
@@ -523,7 +522,7 @@ class Test自定义strrepr(unittest.TestCase):
     def test_custom_repr_with_fields(self):
         """自定义回调应能访问对象字段构造复杂输出。"""
         _设置自定义strrepr(中枢, '__repr__',
-            lambda h: f'Hub#{h.序号} HG={h.高:.2f} LD={h.低:.2f} elem={len(h.元素)}')
+            lambda h: f'Hub#{h.序号} HG={h.高:.2f} LD={h.低:.2f} elem={len(h.基础序列)}')
         h = self.obs.中枢序列[0]
         r = repr(h)
         self.assertIn('Hub#0', r)
@@ -533,10 +532,10 @@ class Test自定义strrepr(unittest.TestCase):
 
     def test_custom_str_with_direction(self):
         """自定义 __str__ 应能访问方向字段。"""
-        _设置自定义strrepr(笔, '__str__',
+        _设置自定义strrepr(虚线, '__str__',
             lambda s: f'笔#{s.序号}方向{s.方向}')
         s = self.obs.笔序列[0]
-        self.assertEqual(str(s), '笔#0方向向上')
+        self.assertEqual(str(s), '笔#0方向相对方向.向上')
 
 
 class Test多线程(unittest.TestCase):

@@ -120,7 +120,7 @@ chan_ext = Extension(
 
 setup(
     name='chan-c99',
-    version='0.1.5',
+    version='0.1.6',
     description='Python bindings for the chan2c99 缠论 technical analysis library',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',

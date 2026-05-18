@@ -41,7 +41,7 @@ else:
     from ._core import (
         观察者, 缠论配置, 背驰分析,
         K线, 缠论K线, 分型, 虚线, 笔, 线段, 线段特征, 中枢, 缺口, 动态数组,
-        _设置自定义strrepr,
+        _设置自定义strrepr, _设置相对方向类,
     )
 
     # English backward-compatible aliases
@@ -69,6 +69,11 @@ from .enums import (
     相对方向, 分型结构, ObjectType,
     RelativeDirection, FractalStructure,
 )
+
+# Wire the 相对方向 Python enum class into the C extension so that
+# direction properties return enum instances instead of strings.
+if _mode != 'ctypes':
+    _设置相对方向类(相对方向)
 
 __all__ = [
     # Chinese (primary)

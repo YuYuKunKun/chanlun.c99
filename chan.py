@@ -1086,6 +1086,35 @@ class 缠论K线(object):
         K = 缠论K线(self.序号, self.时间戳, self.高, self.低, self.方向, self.标的K线, self.原始起始序号, self.原始结束序号, self.分型)
         return K
 
+    @property
+    def 与MACD柱子匹配(self) -> bool:
+        if self.分型 in (分型结构.底, 分型结构.下):
+            return self.标的K线.macd.MACD柱 < 0
+
+        if self.分型 in (分型结构.顶, 分型结构.上):
+            return self.标的K线.macd.MACD柱 > 0
+        return False
+
+    @property
+    def 与RSI匹配(self) -> bool:
+        if self.分型 in (分型结构.底, 分型结构.下):
+            return self.标的K线.rsi.RSI < self.标的K线.rsi.RSI_SMA
+
+        if self.分型 in (分型结构.顶, 分型结构.上):
+            return self.标的K线.rsi.RSI > self.标的K线.rsi.RSI_SMA
+        return False
+
+    @property
+    def 与KDJ匹配(self) -> bool:
+        if self.标的K线.kdj.K is None or self.标的K线.kdj.D is None:
+            return False
+        if self.分型 in (分型结构.底, 分型结构.下):
+            return self.标的K线.kdj.K < self.标的K线.kdj.D
+
+        if self.分型 in (分型结构.顶, 分型结构.上):
+            return self.标的K线.kdj.K > self.标的K线.kdj.D
+        return False
+
     @classmethod
     def 时间戳对齐(cls, 基线: List["缠论K线"], k线: "缠论K线"):
         if 基线:
@@ -1279,6 +1308,55 @@ class 分型(object):
 
     def __repr__(self):
         return f"{self.中.分型}<{self.时间戳}, {self.分型特征值}, None: {self.左 is None}, None: {self.右 is None}>"
+    @property
+    def 强度(self):
+        if self.结构 not in (分型结构.底, 分型结构.顶):
+            return "未知"
+        if not self.右 or not self.左:
+            return "未知"
+
+        if 关系组 := self.关系组:
+            if self.结构 is 分型结构.底:
+                if 关系组[-1].是否向下():
+                    return "弱"
+                elif 关系组[-1].是否向上():
+                    return "强"
+                else:
+                    return "中"
+
+            elif self.结构 is 分型结构.顶:
+                if 关系组[-1].是否向上():
+                    return "弱"
+                elif 关系组[-1].是否向下():
+                    return "强"
+                else:
+                    return "中"
+
+        if self.右 and self.左:
+            if self.结构 is 分型结构.底:
+                if self.右.标的K线.收盘价 > self.左.标的K线.高:
+                    return "强"
+                elif self.右.标的K线.收盘价 > self.中.标的K线.高:
+                    return "中"
+                else:
+                    return "弱"
+            elif self.结构 is 分型结构.顶:
+                if self.右.标的K线.收盘价 < self.左.标的K线.低:
+                    return "强"
+                elif self.右.标的K线.收盘价 < self.中.标的K线.低:
+                    return "中"
+                else:
+                    return "弱"
+        return "未知"
+
+    @property
+    def 与MACD柱子分型匹配(self) -> bool:
+        if self.右 and self.左:
+            if self.结构 is 分型结构.底:
+                return self.左.标的K线.macd.MACD柱 > self.中.标的K线.macd.MACD柱 < self.右.标的K线.macd.MACD柱
+            if self.结构 is 分型结构.顶:
+                return self.左.标的K线.macd.MACD柱 < self.中.标的K线.macd.MACD柱 > self.右.标的K线.macd.MACD柱
+        return False
 
     @classmethod
     def 判断分型(cls, 左: "分型", 右: "分型", 模式: str = "中") -> bool:
@@ -2882,13 +2960,13 @@ class 观察者:
         self.配置: 缠论配置 = 配置
         self.__终止时间戳: Optional[datetime] = 转化为时间戳(self.配置.手动终止) if self.配置.手动终止 else None
 
-        self._重置基础序列()
+        self.重置基础序列()
 
     @property
     def 标识(self) -> str:
         return f"{self.符号}:{self.周期}"
 
-    def _重置基础序列(self):
+    def 重置基础序列(self):
         self.基础缠K序列: List[缠论K线] = []
 
         self.普通K线序列: List[K线] = []

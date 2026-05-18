@@ -15,10 +15,31 @@ class 相对方向(IntEnum):
     逆 = 7
     同 = 8
 
+    def __str__(self):
+        return f"相对方向.{self.name}"
+
+    def __repr__(self):
+        return f"相对方向.{self.name}"
+
     def 翻转(self) -> "相对方向":
         """Flip direction (上↔下, 顺↔逆, etc.)."""
         from ._core import _rel_dir_flip
         return 相对方向(_rel_dir_flip(int(self)))
+
+    def 是否向上(self) -> bool:
+        return self in (相对方向.向上, 相对方向.向上缺口, 相对方向.衔接向上)
+
+    def 是否向下(self) -> bool:
+        return self in (相对方向.向下, 相对方向.向下缺口, 相对方向.衔接向下)
+
+    def 是否包含(self) -> bool:
+        return self in (相对方向.顺, 相对方向.逆, 相对方向.同)
+
+    def 是否缺口(self) -> bool:
+        return self in (相对方向.向下缺口, 相对方向.向上缺口)
+
+    def 是否衔接(self) -> bool:
+        return self in (相对方向.衔接向下, 相对方向.衔接向上)
 
     @classmethod
     def 分析(cls, 前高: float, 前低: float, 后高: float, 后低: float) -> "相对方向":
