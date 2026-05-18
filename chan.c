@@ -71,7 +71,7 @@ static 内存池块 *分配新块(内存池 *self, size_t 数据容量) {
 void 内存池_初始化(内存池 *self, size_t 初始块大小) {
     if (初始块大小 == 0) 初始块大小 = 1024 * 1024; /* 默认 1 MB */
 
-        self->首块 = NULL;
+    self->首块 = NULL;
     self->当前块 = NULL;
     self->块大小 = 初始块大小;
     self->总容量 = 0;
@@ -101,8 +101,8 @@ void *内存池_分配(内存池 *self, size_t 大小) {
         } else {
             /* 扩容：下一个默认块 2x */
             self->块大小 = (self->块大小 < (SIZE_MAX / 2))
-            ? self->块大小 * 2
-            : self->块大小;
+                            ? self->块大小 * 2
+                            : self->块大小;
         }
 
         block = 分配新块(self, 新块大小);
@@ -217,8 +217,14 @@ void 打印内存摘要(void) {
 }
 
 void chan_memory_diagnostics(void) { 打印内存摘要(); }
-int chan_cnt_alloc(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&分配计数[type], __ATOMIC_RELAXED) : -1; }
-int chan_cnt_free(int type) { return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&释放计数[type], __ATOMIC_RELAXED) : -1; }
+
+int chan_cnt_alloc(int type) {
+    return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&分配计数[type], __ATOMIC_RELAXED) : -1;
+}
+
+int chan_cnt_free(int type) {
+    return (type >= 0 && type < CHAN_TYPE_COUNT) ? (int) __atomic_load_n(&释放计数[type], __ATOMIC_RELAXED) : -1;
+}
 
 
 static pthread_mutex_t 全局池初始化锁 = PTHREAD_MUTEX_INITIALIZER;
@@ -292,7 +298,7 @@ void *分配(size_t 大小, 对象类型 类型) {
             old_head = (对象头结构 *) __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
             ((对象头结构 *) ptr)->下一清理对象 = old_head;
         } while (!__atomic_compare_exchange_n(&pool->清理头, &((对象头结构 *) ptr)->下一清理对象, ptr,
-                                               false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+                                              false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
     }
     __atomic_fetch_add(&分配计数[类型], 1, __ATOMIC_RELAXED);
     return ptr;
@@ -2611,11 +2617,11 @@ void 线段_获取内部中枢序列(虚线 *段, 缠论配置 *配置,
 
     char buf[128];
     snprintf(buf, 127, "%s_%d_实_", 段->标识, 段->序号);
-    中枢_分析(&前, &段->实_中枢序列, false, buf);
+    中枢_分析(&前, &段->实_中枢序列, true, buf);
     snprintf(buf, 127, "%s_%d_虚_", 段->标识, 段->序号);
-    中枢_分析(&后, &段->虚_中枢序列, false, buf);
+    中枢_分析(&后, &段->虚_中枢序列, true, buf);
     snprintf(buf, 127, "%s_%d_合_", 段->标识, 段->序号);
-    中枢_分析(&段->基础序列, &段->合_中枢序列, false, buf);
+    中枢_分析(&段->基础序列, &段->合_中枢序列, true, buf);
 
     if (虚_out) *虚_out = 段->虚_中枢序列;
     if (实_out) *实_out = 段->实_中枢序列;
@@ -3473,7 +3479,7 @@ void 中枢_分析(动态数组 *虚线序列, 动态数组 *中枢序列,
                 虚线 *中 = 动态数组_获取(虚线序列, i);
                 虚线 *右 = 动态数组_获取(虚线序列, i + 1);
                 if (!中枢_基础检查(左, 中, 右)) continue;
-                if (跳过首部 && (左->序号 == 0 || i == 0)) continue;
+                if (跳过首部 && (左->序号 == 0 || i == 1)) continue;
                 if (i >= 2) {
                     相对方向 rel = 相对方向_分析(
                         ((虚线 *) 动态数组_获取(虚线序列, i - 2))->高,
@@ -4260,7 +4266,7 @@ typedef struct {
 
 /* 测试 1: 并行完整分析 —— 每个线程独立跑全量数据 */
 static void *mt_并行分析(void *arg) {
-    MTResult *r = (MTResult *)arg;
+    MTResult *r = (MTResult *) arg;
     缠论配置 *cfg = 缠论配置_不推送();
     观察者 *obs = 观察者_读取数据文件(r->file, cfg);
     r->strokes = obs->笔序列.长度;
@@ -4275,17 +4281,20 @@ static void *mt_并行分析(void *arg) {
 
 /* 测试 2: 并发池分配压力 —— 每线程分配 10000 根 K 线 */
 static void *mt_创建K线(void *arg) {
-    MTResult *r = (MTResult *)arg;
+    MTResult *r = (MTResult *) arg;
     for (int i = 0; i < 10000; i++) {
         char id[32];
         snprintf(id, sizeof(id), "MT%d-K%d", r->id, i);
         K线 *k = K线_新建(id, i, 300, 1761327300 + i * 60,
-                          50000.0 + (double)(i % 100),
-                          50100.0 + (double)(i % 100),
-                          49900.0 + (double)(i % 100),
-                          50050.0 + (double)(i % 100),
-                          100.0);
-        if (!k) { r->errors++; return NULL; }
+                      50000.0 + (double) (i % 100),
+                      50100.0 + (double) (i % 100),
+                      49900.0 + (double) (i % 100),
+                      50050.0 + (double) (i % 100),
+                      100.0);
+        if (!k) {
+            r->errors++;
+            return NULL;
+        }
     }
     return NULL;
 }
@@ -4462,7 +4471,6 @@ int main(int argc, char **argv) {
         fprintf(f枢, "\n");
     }
     fclose(f枢);
-
 
 
     验证弱引用计数(obs);

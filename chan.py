@@ -203,6 +203,7 @@ class 缠论配置(BaseModel):
             图表展示_中枢_线段内部=False,
         )
 
+
 class 相对方向(Enum):
     向上 = "交叠向上"
     向下 = "交叠向下"
@@ -1308,6 +1309,7 @@ class 分型(object):
 
     def __repr__(self):
         return f"{self.中.分型}<{self.时间戳}, {self.分型特征值}, None: {self.左 is None}, None: {self.右 is None}>"
+
     @property
     def 强度(self):
         if self.结构 not in (分型结构.底, 分型结构.顶):
