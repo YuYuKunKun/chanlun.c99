@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chan-c99"
-version = "2605.6"
+version = "2605.11"
 description = "Python bindings for the chanlun.c99 缠论 technical analysis library"
 authors = [{name = "YuYuKunKun"}]
 license = "MIT"

@@ -49,6 +49,7 @@ static PyTypeObject Stroke_Type;
 static PyTypeObject Segment_Type;
 static PyTypeObject SegFeature_Type;
 static PyTypeObject Hub_Type;
+static PyTypeObject DynArray_Type;
 static PyTypeObject ChanConfig_Type;
 static PyTypeObject Observer_Type;
 
@@ -64,6 +65,15 @@ typedef struct {
     void *ptr; /* C object pointer */
     int owns; /* 1 = owned (call 解引用 in tp_dealloc) */
 } ChanObject;
+
+/* DynArrayObject — lightweight Python wrapper around C 动态数组.
+   Defined here (instead of near the type definition) so that functions
+   above DynArray_Type can access its ->arr member. */
+typedef struct {
+    PyObject_HEAD
+    动态数组 arr;
+    bool owns_elements;
+} DynArrayObject;
 
 /* Forward declarations for K线 classmethods (matching chan.py K线) */
 static PyObject *Py_K线_读取大端字节数组(PyObject *cls, PyObject *args, PyObject *kw);
@@ -89,9 +99,23 @@ static PyObject *Py_线段特征_静态分析(PyObject *py_类, PyObject *args);
 
 static PyObject *Py_中枢_获取序列(ChanObject *self, PyObject *py_忽略);
 
+static PyObject *Py_中枢_基础检查(PyObject *cls, PyObject *args);
+static PyObject *Py_中枢_创建(PyObject *cls, PyObject *args, PyObject *kw);
+static PyObject *Py_中枢_从序列中获取中枢(PyObject *cls, PyObject *args);
+
 static PyObject *Py_笔_分析(PyObject *py_类, PyObject *args, PyObject *kw);
 
 static PyObject *Py_线段_分析(PyObject *py_类, PyObject *args, PyObject *kw);
+
+static PyObject *Py_线段_添加虚线(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_武斗(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_设置特征序列(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_刷新特征序列(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_分割序列(PyObject *cls, PyObject *args, PyObject *kw);
+static PyObject *Py_线段_刷新(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_序列重置(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_获取内部中枢序列(PyObject *cls, PyObject *args);
+static PyObject *Py_线段_基础判断(PyObject *cls, PyObject *args);
 
 static PyObject *Py_中枢_分析(PyObject *py_类, PyObject *args, PyObject *kw);
 
@@ -1274,6 +1298,41 @@ static PyObject *Py_分型_获取_分型特征值(ChanObject *self, void *c) {
     return PyFloat_FromDouble(((分型 *) self->ptr)->分型特征值);
 }
 
+/* --- 分型 __init__ --- */
+
+static int Py_分型_初始化(PyObject *self, PyObject *args, PyObject *kw) {
+    static char *kwlist[] = {"左", "中", "右", NULL};
+    PyObject *py_左 = Py_None, *py_中 = NULL, *py_右 = Py_None;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "|OOO", kwlist,
+                                     &py_左, &py_中, &py_右)) return -1;
+    if (!py_中) {
+        PyErr_SetString(PyExc_TypeError, "分型.__init__ 缺少必选参数 '中'");
+        return -1;
+    }
+    if (!PyObject_TypeCheck(py_中, &ChanKLine_Type)) {
+        PyErr_SetString(PyExc_TypeError, "'中' 必须是缠论K线");
+        return -1;
+    }
+    缠论K线 *左 = NULL, *中 = (缠论K线 *) ((ChanObject *) py_中)->ptr, *右 = NULL;
+    if (py_左 != Py_None) {
+        if (!PyObject_TypeCheck(py_左, &ChanKLine_Type)) {
+            PyErr_SetString(PyExc_TypeError, "'左' 必须是缠论K线或None"); return -1;
+        }
+        左 = (缠论K线 *) ((ChanObject *) py_左)->ptr;
+    }
+    if (py_右 != Py_None) {
+        if (!PyObject_TypeCheck(py_右, &ChanKLine_Type)) {
+            PyErr_SetString(PyExc_TypeError, "'右' 必须是缠论K线或None"); return -1;
+        }
+        右 = (缠论K线 *) ((ChanObject *) py_右)->ptr;
+    }
+    void *ptr = 分型_新建(左, 中, 右);
+    if (!ptr) { PyErr_NoMemory(); return -1; }
+    ((ChanObject *) self)->ptr = ptr;
+    ((ChanObject *) self)->owns = 1;
+    return 0;
+}
+
 static int Py_分型_设置_结构(ChanObject *self, PyObject *v, void *c) {
     分型结构 x;
     if (!解析分型结构(v, &x)) return -1;
@@ -1399,6 +1458,8 @@ static PyTypeObject Fractal_Type = {
     .tp_base = &ChanObject_Type,
     .tp_dealloc = (destructor) Py_Chan对象_释放,
     .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_new = PyType_GenericNew,
+    .tp_init = (initproc) Py_分型_初始化,
     .tp_getset = Fractal_getset,
     .tp_methods = Fractal_methods,
     .tp_repr = (reprfunc) Py_分型_repr,
@@ -2024,7 +2085,180 @@ static PyObject *Py_线段_查找贯穿伤(PyObject *cls, PyObject *py_段) {
     return Py_制作_借用(&DashLine_Type, d);
 }
 
+static PyObject *Py_线段_添加虚线(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_筆;
+    if (!PyArg_ParseTuple(args, "OO", &py_段, &py_筆)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_筆, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    虚线 *段 = (虚线 *) ((ChanObject *) py_段)->ptr;
+    虚线 *筆 = (虚线 *) ((ChanObject *) py_筆)->ptr;
+    if (!线段_添加虚线(段, 筆)) {
+        PyErr_SetString(PyExc_ValueError, "添加虚线失败：不连续或标识不符");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_线段_武斗(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_武;
+    int 行号;
+    if (!PyArg_ParseTuple(args, "OOi", &py_段, &py_武, &行号)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_武, &Fractal_Type)) { PyErr_SetString(PyExc_TypeError, "需要分型参数"); return NULL; }
+    线段_武斗((虚线 *) ((ChanObject *) py_段)->ptr, (分型 *) ((ChanObject *) py_武)->ptr, 行号);
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_线段_设置特征序列(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_序列;
+    int 行号;
+    if (!PyArg_ParseTuple(args, "OOi", &py_段, &py_序列, &行号)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyList_Check(py_序列) || PyList_Size(py_序列) != 3) {
+        PyErr_SetString(PyExc_TypeError, "序列需要长度为3的列表");
+        return NULL;
+    }
+    虚线 *段 = (虚线 *) ((ChanObject *) py_段)->ptr;
+    线段特征 *seq[3] = {NULL, NULL, NULL};
+    for (int i = 0; i < 3; i++) {
+        PyObject *item = PyList_GetItem(py_序列, i);
+        if (item == Py_None) continue;
+        if (!PyObject_TypeCheck(item, &SegFeature_Type)) {
+            PyErr_SetString(PyExc_TypeError, "序列元素需为线段特征或None");
+            return NULL;
+        }
+        seq[i] = (线段特征 *) ((ChanObject *) item)->ptr;
+    }
+    线段_设置特征序列(段, seq, 行号);
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_线段_刷新特征序列(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_配置;
+    if (!PyArg_ParseTuple(args, "OO", &py_段, &py_配置)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_配置, &ChanConfig_Type)) { PyErr_SetString(PyExc_TypeError, "需要配置参数"); return NULL; }
+    线段_刷新特征序列((虚线 *) ((ChanObject *) py_段)->ptr, (缠论配置 *) ((ChanObject *) py_配置)->ptr);
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_线段_分割序列(PyObject *cls, PyObject *args, PyObject *kw) {
+    static char *kwlist[] = {"段", "所属中枢", NULL};
+    PyObject *py_段, *py_所属中枢 = Py_None;
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O", kwlist, &py_段, &py_所属中枢)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    中枢 *所属中枢 = NULL;
+    if (py_所属中枢 != Py_None) {
+        if (!PyObject_TypeCheck(py_所属中枢, &Hub_Type)) { PyErr_SetString(PyExc_TypeError, "所属中枢需为中枢类型"); return NULL; }
+        所属中枢 = (中枢 *) ((ChanObject *) py_所属中枢)->ptr;
+    }
+    虚线 *段 = (虚线 *) ((ChanObject *) py_段)->ptr;
+    动态数组 前, 后, 第三;
+    动态数组_初始化(&前, 4);
+    动态数组_初始化(&后, 4);
+    动态数组_初始化(&第三, 4);
+    虚线 *贯穿伤 = NULL;
+    线段_分割序列(段, 所属中枢, &前, &后, &第三, &贯穿伤);
+
+    /* Convert C dynamic arrays to Python lists, then clear C arrays */
+    PyObject *py_前 = PyList_New(前.长度);
+    for (size_t i = 0; i < 前.长度; i++)
+        PyList_SetItem(py_前, i, Py_制作_借用(&DashLine_Type, 动态数组_获取(&前, i)));
+    PyObject *py_后 = PyList_New(后.长度);
+    for (size_t i = 0; i < 后.长度; i++)
+        PyList_SetItem(py_后, i, Py_制作_借用(&DashLine_Type, 动态数组_获取(&后, i)));
+    PyObject *py_第三 = PyList_New(第三.长度);
+    for (size_t i = 0; i < 第三.长度; i++)
+        PyList_SetItem(py_第三, i, Py_制作_借用(&DashLine_Type, 动态数组_获取(&第三, i)));
+    PyObject *py_贯穿伤 = 贯穿伤 ? Py_制作_借用(&DashLine_Type, 贯穿伤) : Py_NewRef(Py_None);
+
+    /* Decrement weak refs and free C array buffers */
+    弱引用_数组清除(&前);
+    弱引用_数组清除(&后);
+    弱引用_数组清除(&第三);
+
+    return Py_BuildValue("(NNNN)", py_前, py_后, py_第三, py_贯穿伤);
+}
+
+static PyObject *Py_线段_刷新(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_配置;
+    if (!PyArg_ParseTuple(args, "OO", &py_段, &py_配置)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_配置, &ChanConfig_Type)) { PyErr_SetString(PyExc_TypeError, "需要配置参数"); return NULL; }
+    线段_刷新((虚线 *) ((ChanObject *) py_段)->ptr, (缠论配置 *) ((ChanObject *) py_配置)->ptr);
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_线段_序列重置(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_序列;
+    if (!PyArg_ParseTuple(args, "OO", &py_段, &py_序列)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_序列, &DynArray_Type)) { PyErr_SetString(PyExc_TypeError, "需要动态数组参数"); return NULL; }
+    线段_序列重置((虚线 *) ((ChanObject *) py_段)->ptr, &((DynArrayObject *) py_序列)->arr);
+    Py_RETURN_NONE;
+}
+
+/* Helper: convert C dynamic array of hubs to Python list */
+static PyObject *Py_中枢数组_转列表(动态数组 *arr) {
+    PyObject *list = PyList_New(arr->长度);
+    for (size_t i = 0; i < arr->长度; i++)
+        PyList_SetItem(list, i, Py_制作_借用(&Hub_Type, 动态数组_获取(arr, i)));
+    return list;
+}
+
+static PyObject *Py_线段_获取内部中枢序列(PyObject *cls, PyObject *args) {
+    PyObject *py_段, *py_配置;
+    if (!PyArg_ParseTuple(args, "OO", &py_段, &py_配置)) return NULL;
+    if (!PyObject_TypeCheck(py_段, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_配置, &ChanConfig_Type)) { PyErr_SetString(PyExc_TypeError, "需要配置参数"); return NULL; }
+    虚线 *段 = (虚线 *) ((ChanObject *) py_段)->ptr;
+    缠论配置 *配置 = (缠论配置 *) ((ChanObject *) py_配置)->ptr;
+    动态数组 虚_out, 实_out, 合_out;
+    线段_获取内部中枢序列(段, 配置, &虚_out, &实_out, &合_out);
+    PyObject *py_虚 = Py_中枢数组_转列表(&虚_out);
+    PyObject *py_实 = Py_中枢数组_转列表(&实_out);
+    PyObject *py_合 = Py_中枢数组_转列表(&合_out);
+    return Py_BuildValue("(NNN)", py_虚, py_实, py_合);
+}
+
+static PyObject *Py_线段_基础判断(PyObject *cls, PyObject *args) {
+    PyObject *py_左, *py_中, *py_右, *py_关系序列;
+    if (!PyArg_ParseTuple(args, "OOOO", &py_左, &py_中, &py_右, &py_关系序列)) return NULL;
+    if (!PyObject_TypeCheck(py_左, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_中, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_右, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyList_Check(py_关系序列)) { PyErr_SetString(PyExc_TypeError, "关系序列需为列表"); return NULL; }
+    Py_ssize_t n = PyList_Size(py_关系序列);
+    if (n == 0 || n > 16) { PyErr_SetString(PyExc_ValueError, "关系序列长度需在1-16之间"); return NULL; }
+    相对方向 rels[16];
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *item = PyList_GetItem(py_关系序列, i);
+        rels[i] = (相对方向) PyLong_AsLong(item);
+    }
+    bool ok = 线段_基础判断(
+        (虚线 *) ((ChanObject *) py_左)->ptr,
+        (虚线 *) ((ChanObject *) py_中)->ptr,
+        (虚线 *) ((ChanObject *) py_右)->ptr,
+        rels, (size_t) n);
+    return PyBool_FromLong(ok);
+}
+
 static PyMethodDef Segment_methods[] = {
+    {
+        "添加虚线", (PyCFunction) Py_线段_添加虚线, METH_VARARGS | METH_CLASS,
+        "线段.添加虚线(段, 筆) — 向线段基础序列中追加一笔。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  筆 (虚线) — 待添加的笔"
+    },
+    {
+        "武斗", (PyCFunction) Py_线段_武斗, METH_VARARGS | METH_CLASS,
+        "线段.武斗(段, 武, 行号) — 设置线段的武（终点）分型。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  武 (分型) — 终点分型\n"
+        "  行号 (int) — 调用行号"
+    },
     {
         "四象", (PyCFunction) Py_线段_获取_四象, METH_CLASS | METH_O,
         "线段.四象(段) — 获取线段的四象分类（老阳/老阴/少阴/小阳）。\n\n"
@@ -2050,18 +2284,66 @@ static PyMethodDef Segment_methods[] = {
         "  段 (虚线) — 线段对象"
     },
     {
+        "设置特征序列", (PyCFunction) Py_线段_设置特征序列, METH_VARARGS | METH_CLASS,
+        "线段.设置特征序列(段, 序列, 行号) — 设置线段的特征序列。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  序列 (list) — 长度为3的列表（线段特征或None）\n"
+        "  行号 (int) — 调用行号"
+    },
+    {
+        "刷新特征序列", (PyCFunction) Py_线段_刷新特征序列, METH_VARARGS | METH_CLASS,
+        "线段.刷新特征序列(段, 配置) — 根据配置刷新线段的特征序列。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  配置 (缠论配置) — 分析配置"
+    },
+    {
+        "分割序列", (PyCFunction) Py_线段_分割序列,
+        METH_CLASS | METH_VARARGS | METH_KEYWORDS,
+        "线段.分割序列(段, 所属中枢=None) -> (前, 后, 第三买卖线, 贯穿伤)\n\n"
+        "分割线段的基础序列为前段和后段。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  所属中枢 (中枢|None) — 可选，所属的中枢"
+    },
+    {
+        "刷新", (PyCFunction) Py_线段_刷新, METH_VARARGS | METH_CLASS,
+        "线段.刷新(段, 配置) — 刷新线段状态（特征序列+武斗+内部中枢）。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  配置 (缠论配置) — 分析配置"
+    },
+    {
+        "序列重置", (PyCFunction) Py_线段_序列重置, METH_VARARGS | METH_CLASS,
+        "线段.序列重置(段, 序列) — 根据笔序列重置线段的基础序列。\n\n"
+        "参数:\n"
+        "  段 (虚线) — 线段对象\n"
+        "  序列 (动态数组) — 笔序列"
+    },
+    {
         "查找贯穿伤", (PyCFunction) Py_线段_查找贯穿伤, METH_CLASS | METH_O,
         "线段.查找贯穿伤(段) — 查找贯穿该线段的虚线（或 None）。\n\n"
         "参数:\n"
         "  段 (虚线) — 线段对象"
     },
     {
-        "创建线段", (PyCFunction) Py_线段_创建线段,
-        METH_CLASS | METH_O,
-        "线段.创建线段(笔序列) → 虚线\n\n"
-        "从笔的动态数组创建线段。\n\n"
+        "获取内部中枢序列", (PyCFunction) Py_线段_获取内部中枢序列, METH_VARARGS | METH_CLASS,
+        "线段.获取内部中枢序列(段, 配置) -> (虚中枢, 实中枢, 合中枢)\n\n"
+        "获取线段内部的三个中枢序列。\n\n"
         "参数:\n"
-        "  笔序列 (动态数组) — 笔对象的动态数组"
+        "  段 (虚线) — 线段对象\n"
+        "  配置 (缠论配置) — 分析配置"
+    },
+    {
+        "基础判断", (PyCFunction) Py_线段_基础判断, METH_VARARGS | METH_CLASS,
+        "线段.基础判断(左, 中, 右, 关系序列) -> bool\n\n"
+        "判断三笔是否满足线段基本要求（连续、重叠、方向正确）。\n\n"
+        "参数:\n"
+        "  左 (虚线) — 左侧笔\n"
+        "  中 (虚线) — 中间笔\n"
+        "  右 (虚线) — 右侧笔\n"
+        "  关系序列 (list[相对方向]) — 允许的相对方向列表"
     },
     {
         "分析", (PyCFunction) Py_线段_分析,
@@ -2087,13 +2369,21 @@ static PyTypeObject Segment_Type = {
     .tp_methods = Segment_methods,
     .tp_doc = "线段 — 工厂类（仅类方法）。操作数据均为虚线。\n\n"
     "类方法:\n"
-    "  线段.创建线段(笔序列) → 虚线\n"
-    "  线段.分析(笔序列, 线段序列, 配置)\n"
+    "  线段.添加虚线(段, 筆)\n"
+    "  线段.武斗(段, 武, 行号)\n"
     "  线段.四象(段) → str\n"
     "  线段.特征分型终结(段) → bool\n"
     "  线段.特征序列状态(段) → (bool, bool, bool)\n"
     "  线段.获取缺口(段) → 缺口|None\n"
-    "  线段.查找贯穿伤(段) → 虚线|None",
+    "  线段.设置特征序列(段, 序列, 行号)\n"
+    "  线段.刷新特征序列(段, 配置)\n"
+    "  线段.分割序列(段, 所属中枢=None) -> (前, 后, 第三买卖线, 贯穿伤)\n"
+    "  线段.刷新(段, 配置)\n"
+    "  线段.序列重置(段, 序列)\n"
+    "  线段.查找贯穿伤(段) → 虚线|None\n"
+    "  线段.获取内部中枢序列(段, 配置) -> (虚, 实, 合)\n"
+    "  线段.基础判断(左, 中, 右, 关系序列) -> bool\n"
+    "  线段.分析(笔序列, 线段序列, 配置)",
 };
 
 /* ================================================================
@@ -2172,6 +2462,113 @@ static PyObject *Py_中枢_当前状态(ChanObject *self, PyObject *Py_UNUSED(py
     return PyUnicode_FromString(中枢_当前状态((中枢 *) self->ptr));
 }
 
+static PyObject *Py_中枢_获取_文(ChanObject *self, void *c) {
+    return Py_制作_借用(&Fractal_Type, 中枢_文((中枢 *) self->ptr));
+}
+
+static PyObject *Py_中枢_获取_武(ChanObject *self, void *c) {
+    return Py_制作_借用(&Fractal_Type, 中枢_武((中枢 *) self->ptr));
+}
+
+static PyObject *Py_中枢_获取_离开段(ChanObject *self, void *c) {
+    return Py_制作_借用(&DashLine_Type, 中枢_离开段((中枢 *) self->ptr));
+}
+
+static PyObject *Py_中枢_获取_完整性_实(ChanObject *self, void *c) {
+    return PyBool_FromLong(中枢_完整性_实((中枢 *) self->ptr));
+}
+
+static PyObject *Py_中枢_获取_完整性_合(ChanObject *self, void *c) {
+    return PyBool_FromLong(中枢_完整性_合((中枢 *) self->ptr));
+}
+
+static PyObject *Py_中枢_获取_图表标题(ChanObject *self, void *c) {
+    中枢 *h = (中枢 *) self->ptr;
+    分型 *文 = 中枢_文(h);
+    return PyUnicode_FromFormat("%s:%d:%s:%d",
+        文->中->标识, 文->中->周期, h->标识, h->序号);
+}
+
+static PyObject *Py_中枢_获取扩展中枢(PyObject *py_self, PyObject *args) {
+    PyObject *py_扩展中枢, *py_配置;
+    if (!PyArg_ParseTuple(args, "OO", &py_扩展中枢, &py_配置)) return NULL;
+    if (!PyObject_TypeCheck(py_self, &Hub_Type)) { PyErr_SetString(PyExc_TypeError, "需要中枢实例"); return NULL; }
+    if (!PyObject_TypeCheck(py_扩展中枢, &DynArray_Type)) { PyErr_SetString(PyExc_TypeError, "需要动态数组参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_配置, &ChanConfig_Type)) { PyErr_SetString(PyExc_TypeError, "需要配置参数"); return NULL; }
+    中枢_获取扩展中枢((中枢 *) ((ChanObject *) py_self)->ptr,
+               &((DynArrayObject *) py_扩展中枢)->arr,
+               (缠论配置 *) ((ChanObject *) py_配置)->ptr);
+    Py_RETURN_NONE;
+}
+
+static PyObject *Py_中枢_校验合法性(PyObject *py_self, PyObject *args) {
+    PyObject *py_序列, *py_中枢序列;
+    if (!PyArg_ParseTuple(args, "OO", &py_序列, &py_中枢序列)) return NULL;
+    if (!PyObject_TypeCheck(py_self, &Hub_Type)) { PyErr_SetString(PyExc_TypeError, "需要中枢实例"); return NULL; }
+    if (!PyObject_TypeCheck(py_序列, &DynArray_Type)) { PyErr_SetString(PyExc_TypeError, "需要动态数组参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_中枢序列, &DynArray_Type)) { PyErr_SetString(PyExc_TypeError, "需要动态数组参数"); return NULL; }
+    return PyBool_FromLong(中枢_校验合法性(
+        (中枢 *) ((ChanObject *) py_self)->ptr,
+        &((DynArrayObject *) py_序列)->arr,
+        &((DynArrayObject *) py_中枢序列)->arr));
+}
+
+static PyObject *Py_中枢_设置第三买卖线(PyObject *py_self, PyObject *py_线) {
+    if (!PyObject_TypeCheck(py_self, &Hub_Type)) { PyErr_SetString(PyExc_TypeError, "需要中枢实例"); return NULL; }
+    虚线 *线 = NULL;
+    if (py_线 != Py_None) {
+        if (!PyObject_TypeCheck(py_线, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线或None"); return NULL; }
+        线 = (虚线 *) ((ChanObject *) py_线)->ptr;
+    }
+    中枢_设置第三买卖线((中枢 *) ((ChanObject *) py_self)->ptr, 线);
+    Py_RETURN_NONE;
+}
+
+/* --- 中枢 classmethods --- */
+
+static PyObject *Py_中枢_基础检查(PyObject *cls, PyObject *args) {
+    PyObject *py_左, *py_中, *py_右;
+    if (!PyArg_ParseTuple(args, "OOO", &py_左, &py_中, &py_右)) return NULL;
+    if (!PyObject_TypeCheck(py_左, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_中, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    if (!PyObject_TypeCheck(py_右, &DashLine_Type)) { PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL; }
+    return PyBool_FromLong(中枢_基础检查(
+        (虚线 *) ((ChanObject *) py_左)->ptr,
+        (虚线 *) ((ChanObject *) py_中)->ptr,
+        (虚线 *) ((ChanObject *) py_右)->ptr));
+}
+
+static PyObject *Py_中枢_创建(PyObject *cls, PyObject *args, PyObject *kw) {
+    static char *kwlist[] = {"左", "中", "右", "级别", "标识", NULL};
+    PyObject *py_左, *py_中, *py_右;
+    int 级别;
+    const char *标识 = "";
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOOi|s", kwlist,
+                                     &py_左, &py_中, &py_右, &级别, &标识)) return NULL;
+    if (!PyObject_TypeCheck(py_左, &DashLine_Type) ||
+        !PyObject_TypeCheck(py_中, &DashLine_Type) ||
+        !PyObject_TypeCheck(py_右, &DashLine_Type)) {
+        PyErr_SetString(PyExc_TypeError, "需要虚线参数"); return NULL;
+    }
+    中枢 *z = 中枢_创建(
+        (虚线 *) ((ChanObject *) py_左)->ptr,
+        (虚线 *) ((ChanObject *) py_中)->ptr,
+        (虚线 *) ((ChanObject *) py_右)->ptr, 级别, 标识);
+    if (!z) { PyErr_SetString(PyExc_ValueError, "基础检查失败"); return NULL; }
+    return Py_制作_拥有(&Hub_Type, z);
+}
+
+static PyObject *Py_中枢_从序列中获取中枢(PyObject *cls, PyObject *args) {
+    PyObject *py_虚线序列, *py_起始方向;
+    const char *标识;
+    if (!PyArg_ParseTuple(args, "OOs", &py_虚线序列, &py_起始方向, &标识)) return NULL;
+    if (!PyObject_TypeCheck(py_虚线序列, &DynArray_Type)) { PyErr_SetString(PyExc_TypeError, "需要动态数组参数"); return NULL; }
+    相对方向 dir = (相对方向) PyLong_AsLong(py_起始方向);
+    中枢 *z = 中枢_从序列中获取中枢(&((DynArrayObject *) py_虚线序列)->arr, dir, 标识);
+    if (!z) Py_RETURN_NONE;
+    return Py_制作_拥有(&Hub_Type, z);
+}
+
 /* --- 中枢 setters --- */
 static int Py_中枢_设置_序号(ChanObject *self, PyObject *value, void *c) {
     long v = PyLong_AsLong(value);
@@ -2204,7 +2601,13 @@ static PyGetSetDef Hub_getset[] = {
     {"低", (getter) Py_中枢_获取_低, NULL, NULL, NULL},
     {"高高", (getter) Py_中枢_获取_高高, NULL, NULL, NULL},
     {"低低", (getter) Py_中枢_获取_低低, NULL, NULL, NULL},
+    {"文", (getter) Py_中枢_获取_文, NULL, NULL, NULL},
+    {"武", (getter) Py_中枢_获取_武, NULL, NULL, NULL},
+    {"离开段", (getter) Py_中枢_获取_离开段, NULL, NULL, NULL},
+    {"图表标题", (getter) Py_中枢_获取_图表标题, NULL, NULL, NULL},
     {"完整性", (getter) Py_中枢_获取_完整性, NULL, NULL, NULL},
+    {"完整性_实", (getter) Py_中枢_获取_完整性_实, NULL, NULL, NULL},
+    {"完整性_合", (getter) Py_中枢_获取_完整性_合, NULL, NULL, NULL},
     {"第三买卖线", (getter) Py_中枢_获取_第三买卖线, NULL, NULL, NULL},
     {"本级_第三买卖线", (getter) Py_中枢_获取_本级_第三买卖线, NULL, NULL, NULL},
     {"基础序列", (getter) Py_中枢_获取_元素, NULL, NULL, NULL},
@@ -2214,11 +2617,65 @@ static PyGetSetDef Hub_getset[] = {
 static PyMethodDef Hub_methods[] = {
     {
         "当前状态", (PyCFunction) Py_中枢_当前状态, METH_NOARGS,
-        "Get the current state of this hub (中枢状态 string)."
+        "中枢.当前状态() -> str\n\n"
+        "获取当前中枢的状态（中枢之中/之上/之下）。"
     },
     {
         "获取序列", (PyCFunction) Py_中枢_获取序列, METH_NOARGS,
-        "Get the element sequence of this hub as a 动态数组."
+        "中枢.获取序列() -> list[虚线]\n\n"
+        "获取中枢的元素序列（含第三买卖线）。"
+    },
+    {
+        "获取扩展中枢", (PyCFunction) Py_中枢_获取扩展中枢, METH_VARARGS,
+        "中枢.获取扩展中枢(扩展中枢, 配置)\n\n"
+        "获取中枢的扩展中枢。\n\n"
+        "参数:\n"
+        "  扩展中枢 (动态数组) — 输出扩展中枢将追加到此数组\n"
+        "  配置 (缠论配置) — 分析配置"
+    },
+    {
+        "校验合法性", (PyCFunction) Py_中枢_校验合法性, METH_VARARGS,
+        "中枢.校验合法性(序列, 中枢序列) -> bool\n\n"
+        "校验中枢在序列中的合法性。\n\n"
+        "参数:\n"
+        "  序列 (动态数组) — 虚线序列\n"
+        "  中枢序列 (动态数组) — 中枢序列"
+    },
+    {
+        "设置第三买卖线", (PyCFunction) Py_中枢_设置第三买卖线, METH_O,
+        "中枢.设置第三买卖线(线)\n\n"
+        "设置中枢的第三买卖线（None则清除）。\n\n"
+        "参数:\n"
+        "  线 (虚线|None) — 第三买卖线"
+    },
+    {
+        "基础检查", (PyCFunction) Py_中枢_基础检查, METH_VARARGS | METH_CLASS,
+        "中枢.基础检查(左, 中, 右) -> bool\n\n"
+        "检查三根虚线是否满足中枢基本要求。\n\n"
+        "参数:\n"
+        "  左 (虚线) — 左侧虚线\n"
+        "  中 (虚线) — 中间虚线\n"
+        "  右 (虚线) — 右侧虚线"
+    },
+    {
+        "创建", (PyCFunction) Py_中枢_创建, METH_CLASS | METH_VARARGS | METH_KEYWORDS,
+        "中枢.创建(左, 中, 右, 级别, 标识='') -> 中枢\n\n"
+        "从三根虚线创建中枢。\n\n"
+        "参数:\n"
+        "  左 (虚线) — 左侧虚线\n"
+        "  中 (虚线) — 中间虚线\n"
+        "  右 (虚线) — 右侧虚线\n"
+        "  级别 (int) — 中枢级别\n"
+        "  标识 (str) — 中枢标识前缀"
+    },
+    {
+        "从序列中获取中枢", (PyCFunction) Py_中枢_从序列中获取中枢, METH_VARARGS | METH_CLASS,
+        "中枢.从序列中获取中枢(虚线序列, 起始方向, 标识) -> 中枢|None\n\n"
+        "从虚线序列中寻找中枢。\n\n"
+        "参数:\n"
+        "  虚线序列 (动态数组) — 虚线序列\n"
+        "  起始方向 (相对方向) — 起始方向\n"
+        "  标识 (str) — 中枢标识前缀"
     },
     {
         "分析", (PyCFunction) Py_中枢_分析,
@@ -2268,18 +2725,28 @@ static PyTypeObject Hub_Type = {
     .tp_methods = Hub_methods,
     .tp_repr = (reprfunc) Py_中枢_repr,
     .tp_str = Py_通用_str,
-    .tp_doc = "中枢 — 三个连续笔/线段的重叠区域。",
+    .tp_doc = "中枢 — 三个连续笔/线段的重叠区域。\n\n"
+    "属性:\n"
+    "  序号, 标识, 级别, 方向, 高, 低, 高高, 低低\n"
+    "  文, 武, 离开段, 图表标题\n"
+    "  完整性, 完整性_实, 完整性_合\n"
+    "  第三买卖线, 本级_第三买卖线, 基础序列\n\n"
+    "实例方法:\n"
+    "  中枢.当前状态() → str\n"
+    "  中枢.获取序列() → list[虚线]\n"
+    "  中枢.获取扩展中枢(扩展中枢, 配置)\n"
+    "  中枢.校验合法性(序列, 中枢序列) → bool\n"
+    "  中枢.设置第三买卖线(线)\n\n"
+    "类方法:\n"
+    "  中枢.基础检查(左, 中, 右) → bool\n"
+    "  中枢.创建(左, 中, 右, 级别, 标识='') → 中枢\n"
+    "  中枢.从序列中获取中枢(虚线序列, 起始方向, 标识) → 中枢|None\n"
+    "  中枢.分析(虚线序列, 中枢序列, 跳过首部, 标识)",
 };
 
 /* ================================================================
  *  动态数组 (Dynamic Array) type — Python py_列表-like wrapper
  * ================================================================ */
-
-typedef struct {
-    PyObject_HEAD
-    动态数组 arr;
-    bool owns_elements; /* true if append() added refs; false if C-populated */
-} DynArrayObject;
 
 static void Py_动态数组_释放(DynArrayObject *self) {
     /* 弱引用模型：清除所有弱引用后释放数组缓冲区 */
@@ -3690,6 +4157,39 @@ static PyObject *Py_序列视图_下标(ObserverSeqView *self, PyObject *key) {
     return NULL;
 }
 
+/* --- _SequenceView.index(value, start=0, stop=len) --- */
+
+static PyObject *Py_序列视图_index(ObserverSeqView *self, PyObject *args) {
+    PyObject *value;
+    Py_ssize_t start = 0, stop = -1;
+    if (!PyArg_ParseTuple(args, "O|nn", &value, &start, &stop)) return NULL;
+
+    Py_ssize_t n = (Py_ssize_t) self->len_fn((观察者 *) self->obs->base.ptr);
+    if (stop < 0 || stop > n) stop = n;
+    if (start < 0) start += n;
+    if (start < 0) start = 0;
+
+    for (Py_ssize_t i = start; i < stop; i++) {
+        void *ptr = self->at_fn((观察者 *) self->obs->base.ptr, (size_t) i);
+        if (!ptr) continue;
+        PyObject *item = Py_制作_借用(self->item_type, ptr);
+        int cmp = PyObject_RichCompareBool(value, item, Py_EQ);
+        Py_DECREF(item);
+        if (cmp == 1) return PyLong_FromSsize_t(i);
+        if (cmp == -1) return NULL;
+    }
+    PyErr_Format(PyExc_ValueError, "%R is not in %s", value, self->name);
+    return NULL;
+}
+
+static PyMethodDef SeqView_methods[] = {
+    {"index", (PyCFunction) Py_序列视图_index, METH_VARARGS,
+     "index(value, start=0, stop=len) -> int\n\n"
+     "返回 value 在序列中首次出现的索引。\n"
+     "若未找到则抛出 ValueError。"},
+    {NULL}
+};
+
 static PyMappingMethods SeqView_as_mapping = {
     .mp_length = (lenfunc) Py_序列视图_长度,
     .mp_subscript = (binaryfunc) Py_序列视图_下标,
@@ -3708,8 +4208,10 @@ static PyTypeObject ObserverSeqView_Type = {
     .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_as_sequence = &SeqView_as_seq,
     .tp_as_mapping = &SeqView_as_mapping,
+    .tp_methods = SeqView_methods,
     .tp_iter = (getiterfunc) PySeqIter_New,
-    .tp_doc = "观察者序列数组的惰性视图。",
+    .tp_doc = "观察者序列数组的惰性视图。\n\n"
+    "支持索引、切片、迭代和 index() 方法。",
 };
 
 static PyObject *Py_制作_序列视图(ObserverObject *obs, PyTypeObject *item_type,
@@ -4069,6 +4571,16 @@ OBS_SEQ_GETTER(ext_hubs_extseg, ext_hubs_extseg, &Hub_Type)
 
 #undef OBS_SEQ_GETTER
 
+static PyObject *Py_观察者_获取_符号(ObserverObject *self, void *c) {
+    (void)c;
+    return PyUnicode_FromString(((观察者 *) self->base.ptr)->符号);
+}
+
+static PyObject *Py_观察者_获取_周期(ObserverObject *self, void *c) {
+    (void)c;
+    return PyLong_FromLong(((观察者 *) self->base.ptr)->周期);
+}
+
 static PyObject *Py_观察者_获取_标识(ObserverObject *self, void *c) {
     (void)c;
     观察者 *obs = (观察者 *) self->base.ptr;
@@ -4084,6 +4596,8 @@ static PyObject *Py_观察者_获取_配置(ObserverObject *self, void *c) {
 }
 
 static PyGetSetDef Observer_getset[] = {
+    {"符号", (getter) Py_观察者_获取_符号, NULL, "交易对符号 (read-only)", NULL},
+    {"周期", (getter) Py_观察者_获取_周期, NULL, "K线周期（秒）(read-only)", NULL},
     {"标识", (getter) Py_观察者_获取_标识, NULL, "Symbol:Period identifier", NULL},
     {"配置", (getter) Py_观察者_获取_配置, NULL, "缠论配置 instance (read-only)", NULL},
     {"普通K线序列", (getter) Py_观察者_获取_raw_klines, NULL, NULL, NULL},

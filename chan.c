@@ -3321,6 +3321,36 @@ bool 中枢_完整性(中枢 *self) {
     return false;
 }
 
+bool 中枢_完整性_实(中枢 *self) {
+    if (self->基础序列.长度 == 0) return false;
+    虚线 *first = 动态数组_获取(&self->基础序列, 0);
+    if (strcmp(first->标识, "线段") != 0 && strcmp(first->标识, "扩展线段") != 0) {
+        return self->第三买卖线 != NULL;
+    }
+    虚线 *last = 动态数组_获取(&self->基础序列, self->基础序列.长度 - 1);
+    for (size_t i = 0; i < last->实_中枢序列.长度; i++) {
+        中枢 *inner = 动态数组_获取(&last->实_中枢序列, i);
+        if (相对方向_是否缺口(相对方向_分析(中枢_高(self), 中枢_低(self), 中枢_高高(inner), 中枢_低低(inner))))
+            return true;
+    }
+    return false;
+}
+
+bool 中枢_完整性_合(中枢 *self) {
+    if (self->基础序列.长度 == 0) return false;
+    虚线 *first = 动态数组_获取(&self->基础序列, 0);
+    if (strcmp(first->标识, "线段") != 0 && strcmp(first->标识, "扩展线段") != 0) {
+        return self->第三买卖线 != NULL;
+    }
+    虚线 *last = 动态数组_获取(&self->基础序列, self->基础序列.长度 - 1);
+    for (size_t i = 0; i < last->合_中枢序列.长度; i++) {
+        中枢 *inner = 动态数组_获取(&last->合_中枢序列, i);
+        if (相对方向_是否缺口(相对方向_分析(中枢_高(self), 中枢_低(self), 中枢_高高(inner), 中枢_低低(inner))))
+            return true;
+    }
+    return false;
+}
+
 void 中枢_获取序列(中枢 *self, 动态数组 *结果) {
     for (size_t i = 0; i < self->基础序列.长度; i++)
         弱引用_数组追加(结果, self->基础序列.数据[i]);
