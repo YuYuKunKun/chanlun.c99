@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chan-c99"
+version = "2605.17"
+description = "Python bindings for the chanlun.c99 缠论 technical analysis library"
+authors = [{name = "YuYuKunKun"}]
+license = "MIT"
+requires-python = ">=3.8"
+readme = "README.md"
+keywords = [
+    "缠论", "chan-theory", "technical-analysis",
+    "k-line", "candlestick", "trading", "finance",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Developers",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+Homepage = "https://github.com/YuYuKunKun/chanlun.c99"
+Repository = "https://github.com/YuYuKunKun/chanlun.c99"
+
+[tool.setuptools]
+packages = ["chan_c99"]
