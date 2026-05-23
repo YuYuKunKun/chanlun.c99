@@ -23,6 +23,10 @@
 
 void *全局内存池 = NULL;
 
+/* 每个类型一个空闲链：已销毁 + 弱引用归零 的对象压入，供 分配() O(1) 复用 */
+static void *类型空闲链[CHAN_TYPE_COUNT] = {NULL};
+static void 尝试回收(void *obj);  /* 前置声明 */
+
 /* ================================================================
  *  内部：获取块的数据区域起始地址
  * ================================================================ */
@@ -313,32 +317,57 @@ bool 释放全局内存池(void) {
 }
 
 void *分配(size_t 大小, 对象类型 类型) {
+    bool 已复用 = false;
+    void *ptr = NULL;
+    内存池 *pool = NULL;
+
+    /* 1. 优先从类型空闲链取（O(1)） */
+    ptr = 类型空闲链[类型];
+    if (ptr) {
+        类型空闲链[类型] = ((对象头结构 *) ptr)->空闲链下一项;
+        已复用 = true;
+        pool = ((对象头结构 *) ptr)->所属内存池;
+        goto init;
+    }
+
+    /* 2. 空闲链无货，走 Arena Bump */
     if (!__atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE)) {
         __atomic_store_n(&全局内存池, 获取全局池(), __ATOMIC_RELEASE);
     }
-    内存池 *pool = (内存池 *) __atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE);
-    void *ptr;
+    pool = (内存池 *) __atomic_load_n(&全局内存池, __ATOMIC_ACQUIRE);
+
     if (pool) {
         ptr = 内存池_分配(pool, 大小);
     } else {
         ptr = calloc(1, 大小);
     }
+
     if (!ptr) {
         chan_oom_handler(大小);
         return NULL;
+    }
+
+init:
+    if (已复用) {
+        /* 清零覆盖旧数据，保留清理链表指针（空闲链已在上面弹出） */
+        void *cleanup_next = ((对象头结构 *) ptr)->下一清理对象;
+        memset(ptr, 0, 大小);
+        ((对象头结构 *) ptr)->下一清理对象 = cleanup_next;
+        fprintf(stderr, "♻ 池复用: %s @ %p\n", 类型名称[类型], ptr);
     }
     引用计数(ptr) = 1;
     对象类型_取(ptr) = 类型;
     ((对象头结构 *) ptr)->所属内存池 = pool;
     ((对象头结构 *) ptr)->弱引用计数 = 0;
-    if (pool) {
-        /* 无锁压入清理链表（LIFO 栈，CAS 循环） */
+    if (pool && !已复用) {
+        /* 新分配对象压入清理链表（复用对象已在链中） */
         对象头结构 *old_head;
         do {
             old_head = (对象头结构 *) __atomic_load_n(&pool->清理头, __ATOMIC_ACQUIRE);
             ((对象头结构 *) ptr)->下一清理对象 = old_head;
-        } while (!__atomic_compare_exchange_n(&pool->清理头, &((对象头结构 *) ptr)->下一清理对象, ptr,
-                                              false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+        } while (!__atomic_compare_exchange_n(&pool->清理头,
+                      &((对象头结构 *) ptr)->下一清理对象, ptr,
+                      false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
     }
     __atomic_fetch_add(&分配计数[类型], 1, __ATOMIC_RELAXED);
     return ptr;
@@ -430,6 +459,7 @@ void 对象销毁(void *对象) {
         default:
             break;
     }
+    尝试回收(对象);
 }
 
 /* ================================================================
@@ -528,6 +558,16 @@ void 动态数组_释放(动态数组 *arr, bool 释放元素) {
  *  弱引用操作 — 全局池是唯一所有者，所有对象间引用均为弱引用
  * ================================================================ */
 
+/* 条件回收：已销毁 + 弱引用归零 → 压入类型空闲链 */
+static void 尝试回收(void *obj) {
+    if (!obj) return;
+    if (!__atomic_load_n(&((对象头结构 *)obj)->已销毁, __ATOMIC_ACQUIRE)) return;
+    if (__atomic_load_n(&((对象头结构 *)obj)->弱引用计数, __ATOMIC_ACQUIRE) != 0) return;
+    对象类型 t = 对象类型_取(obj);
+    ((对象头结构 *)obj)->空闲链下一项 = 类型空闲链[t];
+    类型空闲链[t] = obj;
+}
+
 /* 独立指针字段弱引用设置：
  *   旧目标弱引用计数--，新目标弱引用计数++
  *   用法：弱引用_设置(fractal, 左, new_target)
@@ -543,7 +583,10 @@ void 动态数组_释放(动态数组 *arr, bool 释放元素) {
 
 /* 手动弱引用操作（用于手动平衡场景） */
 #define 弱引用_手动增加(ptr) do { __atomic_fetch_add(&((对象头结构*)(ptr))->弱引用计数, 1, __ATOMIC_RELAXED); } while(0)
-#define 弱引用_手动减少(ptr) do { __atomic_fetch_sub(&((对象头结构*)(ptr))->弱引用计数, 1, __ATOMIC_RELAXED); } while(0)
+#define 弱引用_手动减少(ptr) do { \
+    __atomic_fetch_sub(&((对象头结构*)(ptr))->弱引用计数, 1, __ATOMIC_RELAXED); \
+    尝试回收(ptr); \
+} while(0)
 
 /* 动态数组弱引用操作 — 所有 ++/-- 使用原子操作 */
 void 弱引用_数组追加(动态数组 *arr, void *基础序列) {
@@ -557,6 +600,7 @@ void 弱引用_数组设置(动态数组 *arr, size_t i, void *新元素) {
     void *旧 = 动态数组_获取(arr, i);
     if (旧) {
         __atomic_fetch_sub(&((对象头结构 *) 旧)->弱引用计数, 1, __ATOMIC_RELAXED);
+        尝试回收(旧);
     }
     动态数组_设置(arr, i, 新元素);
     if (新元素) {
@@ -568,6 +612,7 @@ void *弱引用_数组弹出(动态数组 *arr) {
     void *尾 = 动态数组_弹出(arr);
     if (尾) {
         __atomic_fetch_sub(&((对象头结构 *) 尾)->弱引用计数, 1, __ATOMIC_RELAXED);
+        尝试回收(尾);
     }
     return 尾;
 }
