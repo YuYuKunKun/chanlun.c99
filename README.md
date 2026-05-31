@@ -1,3 +1,5 @@
+[![PyPI](https://img.shields.io/pypi/v/chanlun)](https://pypi.org/project/chanlun/)
+
 # chanlun.c99 —— 缠论技术分析库
 
 基于**缠论（缠中说禅理论）**的金融 K 线多层次技术分析库，提供 **Python 参考实现**与 **C99 高性能移植**双版本，两版输出**逐笔完全一致**。附带 **Python C API 原生扩展**，将 C 内核封装为 Python 可直接调用的模块，零 FFI 开销。
